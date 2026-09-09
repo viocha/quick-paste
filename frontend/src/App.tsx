@@ -555,7 +555,7 @@ function ManagerApp() {
                     onChange={(event) => setDraftName(event.target.value)}
                   />
                 </Field>
-                <Field className="min-h-0 flex-1 overflow-hidden">
+                <Field className="min-h-0 flex-1">
                   <FieldLabel htmlFor="phrase-content">内容</FieldLabel>
                   <ScrollArea className="min-h-0 flex-1 rounded-lg border border-input transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
                     <Textarea

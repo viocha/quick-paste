@@ -1,4 +1,5 @@
 .task
+.playwright-cli/
 bin
 frontend/dist
 frontend/node_modules
