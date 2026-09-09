@@ -1,0 +1,70 @@
+.backup-diff-view {
+  display: block;
+  min-width: 100%;
+  margin: 0;
+  color: var(--foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.backup-diff-view .jsondiffpatch-delta {
+  display: block;
+  min-width: 100%;
+  margin: 0;
+  padding-left: 0;
+  color: var(--foreground);
+  font-family: inherit !important;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.backup-diff-view ul.jsondiffpatch-delta,
+.backup-diff-view .jsondiffpatch-delta ul {
+  margin: 0;
+  padding-left: 0.9rem;
+}
+
+.backup-diff-view .jsondiffpatch-property-name {
+  color: var(--foreground);
+  font-family: inherit !important;
+}
+
+.backup-diff-view pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit !important;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.backup-diff-view .jsondiffpatch-added .jsondiffpatch-property-name,
+.backup-diff-view .jsondiffpatch-added .jsondiffpatch-value pre,
+.backup-diff-view .jsondiffpatch-modified .jsondiffpatch-right-value pre,
+.backup-diff-view .jsondiffpatch-textdiff-added {
+  background: rgb(34 197 94 / 12%);
+}
+
+.backup-diff-view .jsondiffpatch-deleted .jsondiffpatch-property-name,
+.backup-diff-view .jsondiffpatch-deleted pre,
+.backup-diff-view .jsondiffpatch-modified .jsondiffpatch-left-value pre,
+.backup-diff-view .jsondiffpatch-textdiff-deleted {
+  background: rgb(239 68 68 / 12%);
+}
+
+.backup-diff-view .jsondiffpatch-moved .jsondiffpatch-moved-destination {
+  background: rgb(245 158 11 / 12%);
+  color: var(--foreground);
+}
+
+.backup-diff-view .jsondiffpatch-unchanged,
+.backup-diff-view .jsondiffpatch-movedestination {
+  color: var(--muted-foreground);
+}
+
+.backup-diff-view.jsondiffpatch-unchanged-visible .jsondiffpatch-unchanged,
+.backup-diff-view.jsondiffpatch-unchanged-visible .jsondiffpatch-movedestination > .jsondiffpatch-value {
+  max-height: none;
+  overflow-y: visible;
+}

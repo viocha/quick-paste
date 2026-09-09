@@ -1,0 +1,24 @@
+version: '3'
+
+vars:
+  APP_NAME: quick-phrase
+  BIN_DIR: bin
+  VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+
+includes:
+  common: ./build/Taskfile.yml
+  windows: ./build/windows/Taskfile.yml
+
+tasks:
+  dev:
+    summary: 开发 Windows 应用
+    cmds:
+      - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}
+  build:
+    summary: 构建 Windows 应用
+    cmds:
+      - task: windows:build
+  run:
+    summary: 运行 Windows 应用
+    cmds:
+      - '"{{.BIN_DIR}}/{{.APP_NAME}}.exe"'

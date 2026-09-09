@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "My Company",
+			"FileDescription": "快捷短语",
+			"LegalCopyright": "© 2026, My Company",
+			"ProductName": "quick-phrase",
+			"Comments": "This is a comment"
+		}
+	}
+}

@@ -1,0 +1,36 @@
+version: '3'
+
+tasks:
+  install:frontend:deps:
+    internal: true
+    run: once
+    dir: frontend
+    sources:
+      - package.json
+      - bun.lock
+    generates:
+      - node_modules/.bun/**
+    cmds:
+      - bun install --frozen-lockfile
+
+  generate:bindings:
+    internal: true
+    cmds:
+      - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true -ts -i
+
+  build:frontend:
+    internal: true
+    deps:
+      - task: install:frontend:deps
+    cmds:
+      - task: generate:bindings
+        vars:
+          BUILD_FLAGS: '{{.BUILD_FLAGS}}'
+      - cmd: bun run --cwd frontend {{if eq .DEV "true"}}build:dev{{else}}build{{end}}
+
+  dev:frontend:
+    deps:
+      - task: install:frontend:deps
+    dir: frontend
+    cmds:
+      - bun run dev --port {{.VITE_PORT}} --strictPort

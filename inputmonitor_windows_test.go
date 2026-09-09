@@ -1,0 +1,120 @@
+//go:build windows
+
+package main
+
+import (
+	"sync"
+	"testing"
+	"time"
+)
+
+func testInputState(t *testing.T) *windowsInputState {
+	t.Helper()
+	s := &windowsInputState{
+		monitor: &InputMonitor{store: &PhraseStore{nodes: []PhraseNode{{ID: "abc", Type: NodeTypePhrase, Name: "abc", Content: "completed"}}}},
+		actions: make(chan struct{}, 1), done: make(chan struct{}), swallowKeyUp: make(map[uint32]bool),
+		showView: func(SuggestionPayload) {}, hideView: func() {}, replaceText: func(int, string) error { return nil },
+	}
+	go s.runActions()
+	t.Cleanup(func() { close(s.done) })
+	return s
+}
+
+func drainActions(t *testing.T, s *windowsInputState) {
+	t.Helper()
+	done := make(chan struct{})
+	s.enqueue(func() { close(done) })
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("action queue stalled")
+	}
+}
+
+func TestConsecutiveCompletions(t *testing.T) {
+	s := testInputState(t)
+	var mu sync.Mutex
+	replacements := 0
+	s.replaceText = func(count int, text string) error {
+		if count != 3 || text != "completed" {
+			t.Errorf("replacement = %d, %q", count, text)
+		}
+		mu.Lock()
+		replacements++
+		mu.Unlock()
+		return nil
+	}
+	for i := 0; i < 3; i++ {
+		for _, ch := range "abc" {
+			s.append(ch)
+		}
+		s.markKeyUpForSwallow(vkReturn)
+		s.accept()
+		if !s.handleKey(wmKeyUp, vkReturn) {
+			t.Fatal("Enter release leaked")
+		}
+		if s.handleKey(wmKeyUp, vkReturn) {
+			t.Fatal("Enter release stayed latched")
+		}
+		drainActions(t, s)
+		if s.query != "" || len(s.suggestions) != 0 {
+			t.Fatal("completion did not reset state")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if replacements != 3 {
+		t.Fatalf("replacements = %d", replacements)
+	}
+}
+
+func TestQueuedUpdateDoesNotReshowDismissedCandidates(t *testing.T) {
+	s := testInputState(t)
+	gate := make(chan struct{})
+	s.enqueue(func() { <-gate })
+	shows := 0
+	s.showView = func(SuggestionPayload) { shows++ }
+	for _, ch := range "abc" {
+		s.append(ch)
+	}
+	s.reset()
+	close(gate)
+	drainActions(t, s)
+	if shows != 0 {
+		t.Fatalf("stale popup shown %d times", shows)
+	}
+}
+
+func TestMouseClickResetsPartialQuery(t *testing.T) {
+	s := testInputState(t)
+	s.append('a')
+	s.append('b')
+	s.handleMouseClick()
+	for _, ch := range "abc" {
+		s.append(ch)
+	}
+	if s.query != "abc" || len(s.suggestions) != 1 {
+		t.Fatalf("query survived click: %q", s.query)
+	}
+	drainActions(t, s)
+}
+
+func TestActionQueuePreservesOrderBeyondOldCapacity(t *testing.T) {
+	s := testInputState(t)
+	gate := make(chan struct{})
+	s.enqueue(func() { <-gate })
+	next := 0
+	for i := 0; i < 300; i++ {
+		s.enqueue(func() {
+			if next != i {
+				t.Errorf("action %d ran at %d", i, next)
+			}
+			next++
+		})
+	}
+	close(gate)
+	drainActions(t, s)
+	if next != 300 {
+		t.Fatalf("actions executed = %d", next)
+	}
+}
