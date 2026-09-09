@@ -137,6 +137,23 @@ body {
   html {
     @apply font-sans;
   }
+  :where(
+    a[href],
+    button:not(:disabled),
+    select:not(:disabled),
+    summary,
+    [role="button"]:not([aria-disabled="true"]),
+    [role="menuitem"]:not([data-disabled]),
+    [role="menuitemcheckbox"]:not([data-disabled]),
+    [role="menuitemradio"]:not([data-disabled]),
+    [role="option"]:not([aria-disabled="true"]),
+    [role="checkbox"]:not([aria-disabled="true"]),
+    [role="radio"]:not([aria-disabled="true"]),
+    [role="switch"]:not([aria-disabled="true"]),
+    [data-slot="scroll-area-scrollbar"]
+  ) {
+    cursor: pointer;
+  }
 }
 /* Compact tree rows and retain the context target while its menu is open. */
 [data-slot="sidebar-menu"], [data-slot="sidebar-menu-sub"] { gap: 0; }
