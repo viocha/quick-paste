@@ -7,9 +7,10 @@ import (
 
 func TestMatchPrefersExactCasePrefix(t *testing.T) {
 	store := &PhraseStore{nodes: []PhraseNode{
-		{ID: "lower", Type: NodeTypePhrase, Name: "abc lower", Content: "lower", Order: 0},
-		{ID: "upper-long", Type: NodeTypePhrase, Name: "ABC longer", Content: "upper-long", Order: 1},
-		{ID: "upper-short", Type: NodeTypePhrase, Name: "ABC short", Content: "upper-short", Order: 2},
+		{ID: "folder", Type: NodeTypeFolder, Name: "Enabled", CompletionEnabled: true},
+		{ID: "lower", ParentID: "folder", Type: NodeTypePhrase, Name: "abc lower", Content: "lower", Order: 0},
+		{ID: "upper-long", ParentID: "folder", Type: NodeTypePhrase, Name: "ABC longer", Content: "upper-long", Order: 1},
+		{ID: "upper-short", ParentID: "folder", Type: NodeTypePhrase, Name: "ABC short", Content: "upper-short", Order: 2},
 	}}
 
 	got := store.Match("ABC", 10)
@@ -23,7 +24,8 @@ func TestMatchPrefersExactCasePrefix(t *testing.T) {
 
 func TestMatchUsesNameWhenContentEmpty(t *testing.T) {
 	store := &PhraseStore{nodes: []PhraseNode{
-		{ID: "empty", Type: NodeTypePhrase, Name: "hello", Content: "", Order: 0},
+		{ID: "folder", Type: NodeTypeFolder, Name: "Enabled", CompletionEnabled: true},
+		{ID: "empty", ParentID: "folder", Type: NodeTypePhrase, Name: "hello", Content: "", Order: 0},
 	}}
 
 	got := store.Match("hel", 10)
@@ -32,6 +34,49 @@ func TestMatchUsesNameWhenContentEmpty(t *testing.T) {
 	}
 	if got[0].Content != "hello" {
 		t.Fatalf("空内容插入值 = %q，期望使用名称", got[0].Content)
+	}
+}
+
+func TestMatchInheritsFolderCompletion(t *testing.T) {
+	store := &PhraseStore{nodes: []PhraseNode{
+		{ID: "on", Type: NodeTypeFolder, Name: "On", CompletionEnabled: true},
+		{ID: "off", Type: NodeTypeFolder, Name: "Off"},
+		{ID: "child", ParentID: "on", Type: NodeTypeFolder, Name: "Child"},
+		{ID: "grandchild", ParentID: "child", Type: NodeTypeFolder, Name: "Grandchild"},
+		{ID: "enabled", ParentID: "on", Type: NodeTypePhrase, Name: "hello enabled"},
+		{ID: "disabled", ParentID: "off", Type: NodeTypePhrase, Name: "hello disabled"},
+		{ID: "nested", ParentID: "child", Type: NodeTypePhrase, Name: "hello nested"},
+		{ID: "deep", ParentID: "grandchild", Type: NodeTypePhrase, Name: "hello deep"},
+		{ID: "root", Type: NodeTypePhrase, Name: "hello root"},
+	}}
+	got := store.Match("hel", 10)
+	if len(got) != 3 {
+		t.Fatalf("匹配数量 = %d，期望 3: %#v", len(got), got)
+	}
+	ids := map[string]bool{}
+	for _, suggestion := range got {
+		ids[suggestion.ID] = true
+	}
+	if !ids["enabled"] || !ids["nested"] || !ids["deep"] || ids["disabled"] || ids["root"] {
+		t.Fatalf("自动补全继承范围错误: %#v", got)
+	}
+}
+
+func TestFolderCompletionPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "phrases.json")
+	store := &PhraseStore{path: path, nodes: []PhraseNode{{ID: "folder", Type: NodeTypeFolder, Name: "Folder"}}}
+	if err := store.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetFolderCompletion("folder", true); err != nil {
+		t.Fatal(err)
+	}
+	loaded := &PhraseStore{path: path}
+	if err := loaded.load(); err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.List(); len(got) != 1 || !got[0].CompletionEnabled {
+		t.Fatalf("completion setting was not persisted: %#v", got)
 	}
 }
 

@@ -8,7 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 export function DetailApp() {
   const tooltipDelay=useTooltipDelay()
   const tooltipTimeout=useTooltipTimeout()
-  const [detail,setDetail]=useState<BrowserDetail>({token:0,content:"",side:"right",arrowY:16,scrollable:false})
+  const [detail,setDetail]=useState<BrowserDetail>({token:0,content:"",side:"right",arrowY:16,scrollable:false,image:""})
   const [content,setContent]=useState<HTMLDivElement|null>(null)
   const [insets,setInsets]=useState(28)
   const anchor=useRef<HTMLDivElement>(null)
@@ -46,8 +46,8 @@ export function DetailApp() {
         arrowStyle={{top:Math.max(6,(detail.arrowY||16)-8)}}
         className="block w-[calc(100vw-16px)] max-w-none">
         {detail.scrollable ? <ScrollArea className="w-full" scrollbarClassName="right-[-10px]!" style={{"--detail-insets":`${insets}px`} as CSSProperties} viewportClassName="max-h-[calc(100svh-var(--detail-insets))]">
-          <div ref={setContent} className="whitespace-pre-wrap break-words">{detail.content}</div>
-        </ScrollArea> : <div ref={setContent} className="whitespace-pre-wrap break-words">{detail.content}</div>}
+          <div ref={setContent}>{detail.image&&<img src={detail.image} alt="剪贴板图片预览" className="mb-2 max-h-72 w-full object-contain"/>}<div className="whitespace-pre-wrap break-words">{detail.content}</div></div>
+        </ScrollArea> : <div ref={setContent}>{detail.image&&<img src={detail.image} alt="剪贴板图片预览" className="mb-2 max-h-72 w-full object-contain"/>}<div className="whitespace-pre-wrap break-words">{detail.content}</div></div>}
       </TooltipContent>
     </Tooltip>
   </TooltipProvider>

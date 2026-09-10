@@ -21,6 +21,10 @@ export function CreatePhrase(parentID: string): $CancellablePromise<$models.Phra
     return $Call.ByID(751647413, parentID);
 }
 
+export function CreatePhraseWithContent(parentID: string, name: string, content: string): $CancellablePromise<$models.PhraseNode> {
+    return $Call.ByID(4195266750, parentID, name, content);
+}
+
 export function DeleteNode(id: string): $CancellablePromise<void> {
     return $Call.ByID(4013309975, id);
 }
@@ -35,6 +39,10 @@ export function MoveNode(id: string, parentID: string): $CancellablePromise<void
 
 export function RenameNode(id: string, name: string): $CancellablePromise<void> {
     return $Call.ByID(1488589130, id, name);
+}
+
+export function SetFolderCompletion(id: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(1746224014, id, enabled);
 }
 
 export function UndoDelete(nodes: $models.PhraseNode[] | null): $CancellablePromise<void> {

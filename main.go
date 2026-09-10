@@ -28,6 +28,13 @@ func main() {
 
 	settings := &SettingsService{}
 	browser := &BrowserService{store: store}
+	phraseService := NewPhraseService(store)
+	clipboardStore, err := NewClipboardStore()
+	if err != nil {
+		log.Fatal(err)
+	}
+	clipboard := NewClipboardService(nil, clipboardStore, browser)
+	browser.clipboard = clipboard
 	var monitor *InputMonitor
 	var manager *application.WebviewWindow
 	app := application.New(application.Options{
@@ -43,10 +50,11 @@ func main() {
 			},
 		},
 		Services: []application.Service{
-			application.NewService(NewPhraseService(store)),
+			application.NewService(phraseService),
 			application.NewService(settings),
 			application.NewService(backup),
 			application.NewService(browser),
+			application.NewService(clipboard),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
@@ -54,12 +62,20 @@ func main() {
 		OnShutdown: func() {
 			backup.stop()
 			browser.stop()
+			clipboard.stopService()
 			if monitor != nil {
 				monitor.Stop()
 			}
 		},
 	})
 	settings.app = app
+	phraseService.changed = func() {
+		app.Event.Emit("phrases-changed")
+		if monitor != nil && monitor.resetFn != nil {
+			monitor.resetFn()
+		}
+	}
+	clipboard.app = app
 	app.SetIcon(appIcon)
 
 	manager = app.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -73,6 +89,7 @@ func main() {
 		BackgroundColour: application.NewRGB(255, 255, 255),
 		URL:              "/",
 	})
+	browser.manager = manager
 
 	// 关闭管理窗口只隐藏到托盘，不结束进程。
 	manager.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
@@ -115,10 +132,11 @@ func main() {
 	})
 
 	browser.window = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name: "phrase-browser", Title: "短语浏览", Width: browserWidth, Height: browserHeight,
-		Hidden: true, Frameless: true, DisableResize: true, AlwaysOnTop: true,
+		Name: "phrase-browser", Title: "快捷面板", Width: browserWidth, Height: browserHeight,
+		MinWidth: 300, MinHeight: 260,
+		Hidden: true, Frameless: true, DisableResize: false, AlwaysOnTop: true,
 		BackgroundColour: application.NewRGB(255, 255, 255), URL: "/#browser",
-		Windows: application.WindowsWindow{HiddenOnTaskbar: true, ExStyle: wsExNoActivate | 0x80 | 0x08},
+		Windows: application.WindowsWindow{HiddenOnTaskbar: true, ExStyle: 0x80 | 0x08},
 	})
 	browser.detailWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name: "phrase-detail", Title: "短语详情", Width: 300, Height: 160,
@@ -142,6 +160,7 @@ func main() {
 			log.Printf("启动全局输入监听失败: %v", err)
 		}
 		browser.start()
+		clipboard.start()
 	})
 
 	if err := app.Run(); err != nil {

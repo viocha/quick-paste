@@ -29,6 +29,18 @@ export function DismissDetail(): $CancellablePromise<void> {
     return $Call.ByID(2886056142);
 }
 
+export function GetActiveTab(): $CancellablePromise<string> {
+    return $Call.ByID(1306738876);
+}
+
+export function GetClipboardHotkey(): $CancellablePromise<string> {
+    return $Call.ByID(3140010369);
+}
+
+export function GetClipboardHotkeyError(): $CancellablePromise<string> {
+    return $Call.ByID(4065968069);
+}
+
 export function GetDetail(): $CancellablePromise<$models.BrowserDetail> {
     return $Call.ByID(2106315146);
 }
@@ -39,6 +51,10 @@ export function GetHotkey(): $CancellablePromise<string> {
 
 export function GetHotkeyError(): $CancellablePromise<string> {
     return $Call.ByID(1448562589);
+}
+
+export function GetPinned(): $CancellablePromise<boolean> {
+    return $Call.ByID(2483798437);
 }
 
 export function Hide(): $CancellablePromise<void> {
@@ -53,8 +69,29 @@ export function Insert(id: string): $CancellablePromise<void> {
     return $Call.ByID(158012884, id);
 }
 
+export function OpenManager(): $CancellablePromise<void> {
+    return $Call.ByID(499134092);
+}
+
+/**
+ * ReadyToShow is called after React has committed the loading state. Keeping
+ * the native window hidden until then prevents a stale frame or blank WebView
+ * surface from flashing on the first opening.
+ */
+export function ReadyToShow(): $CancellablePromise<void> {
+    return $Call.ByID(1912236400);
+}
+
+export function SetClipboardHotkey(value: string): $CancellablePromise<void> {
+    return $Call.ByID(2690399501, value);
+}
+
 export function SetHotkey(value: string): $CancellablePromise<void> {
     return $Call.ByID(2622629349, value);
+}
+
+export function SetPinned(pinned: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2726139897, pinned);
 }
 
 export function ShowDetail(id: string, top: number, height: number): $CancellablePromise<void> {

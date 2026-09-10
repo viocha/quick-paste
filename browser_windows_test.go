@@ -57,6 +57,16 @@ func TestGlobalHotkeyPersistenceAndConflict(t *testing.T) {
 	if second.GetHotkey() != "" {
 		t.Fatal("failed registration changed settings")
 	}
+	const clipboardShortcut = "Ctrl+Alt+Shift+F22"
+	if err := first.SetClipboardHotkey(clipboardShortcut); err != nil {
+		t.Skipf("test clipboard shortcut unavailable: %v", err)
+	}
+	if err := second.SetClipboardHotkey(clipboardShortcut); err == nil {
+		t.Fatal("conflicting clipboard shortcut accepted")
+	}
+	if first.GetClipboardHotkey() != clipboardShortcut || first.GetHotkey() != shortcut {
+		t.Fatal("clipboard shortcut changed the phrase shortcut")
+	}
 	if err := first.SetHotkey("invalid"); err == nil {
 		t.Fatal("invalid shortcut accepted")
 	}

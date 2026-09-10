@@ -20,12 +20,13 @@ const (
 )
 
 type PhraseNode struct {
-	ID       string   `json:"id"`
-	ParentID string   `json:"parentId,omitempty"`
-	Type     NodeType `json:"type"`
-	Name     string   `json:"name"`
-	Content  string   `json:"content,omitempty"`
-	Order    int      `json:"order"`
+	ID                string   `json:"id"`
+	ParentID          string   `json:"parentId,omitempty"`
+	Type              NodeType `json:"type"`
+	Name              string   `json:"name"`
+	Content           string   `json:"content,omitempty"`
+	Order             int      `json:"order"`
+	CompletionEnabled bool     `json:"completionEnabled,omitempty"`
 }
 
 type Suggestion struct {
@@ -126,6 +127,10 @@ func (s *PhraseStore) List() []PhraseNode {
 }
 
 func (s *PhraseStore) Create(parentID string, kind NodeType, names ...string) (PhraseNode, error) {
+	return s.create(parentID, kind, "", names...)
+}
+
+func (s *PhraseStore) create(parentID string, kind NodeType, content string, names ...string) (PhraseNode, error) {
 	if kind != NodeTypeFolder && kind != NodeTypePhrase {
 		return PhraseNode{}, errors.New("无效节点类型")
 	}
@@ -154,10 +159,12 @@ func (s *PhraseStore) Create(parentID string, kind NodeType, names ...string) (P
 		ParentID: parentID,
 		Type:     kind,
 		Name:     name,
+		Content:  content,
 		Order:    s.nextOrderLocked(parentID),
 	}
 	s.nodes = append(s.nodes, node)
 	if err := s.saveLocked(); err != nil {
+		s.nodes = s.nodes[:len(s.nodes)-1]
 		return PhraseNode{}, err
 	}
 	return node, nil
@@ -173,8 +180,13 @@ func (s *PhraseStore) Rename(id, name string) error {
 	defer s.mu.Unlock()
 	for i := range s.nodes {
 		if s.nodes[i].ID == id {
+			previous := s.nodes[i].Name
 			s.nodes[i].Name = name
-			return s.saveLocked()
+			if err := s.saveLocked(); err != nil {
+				s.nodes[i].Name = previous
+				return err
+			}
+			return nil
 		}
 	}
 	return errors.New("节点不存在")
@@ -193,12 +205,38 @@ func (s *PhraseStore) UpdatePhrase(id, name, content string) error {
 			if s.nodes[i].Type != NodeTypePhrase {
 				return errors.New("节点不是短语")
 			}
+			previousName, previousContent := s.nodes[i].Name, s.nodes[i].Content
 			s.nodes[i].Name = name
 			s.nodes[i].Content = content
-			return s.saveLocked()
+			if err := s.saveLocked(); err != nil {
+				s.nodes[i].Name, s.nodes[i].Content = previousName, previousContent
+				return err
+			}
+			return nil
 		}
 	}
 	return errors.New("短语不存在")
+}
+
+func (s *PhraseStore) SetFolderCompletion(id string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.nodes {
+		if s.nodes[i].ID != id {
+			continue
+		}
+		if s.nodes[i].Type != NodeTypeFolder {
+			return errors.New("只有文件夹可以设置自动补全")
+		}
+		previous := s.nodes[i].CompletionEnabled
+		s.nodes[i].CompletionEnabled = enabled
+		if err := s.saveLocked(); err != nil {
+			s.nodes[i].CompletionEnabled = previous
+			return err
+		}
+		return nil
+	}
+	return errors.New("文件夹不存在")
 }
 
 func (s *PhraseStore) Delete(id string) error {
@@ -288,8 +326,33 @@ func (s *PhraseStore) Match(query string, limit int) []Suggestion {
 		rank int
 	}
 	matches := make([]ranked, 0)
+	enabledFolders := make(map[string]bool)
+	folderParents := make(map[string]string)
+	for _, node := range s.nodes {
+		if node.Type != NodeTypeFolder {
+			continue
+		}
+		folderParents[node.ID] = node.ParentID
+		if node.CompletionEnabled {
+			enabledFolders[node.ID] = true
+		}
+	}
+	completionEnabled := func(parentID string) bool {
+		visited := make(map[string]bool)
+		for parentID != "" && !visited[parentID] {
+			if enabledFolders[parentID] {
+				return true
+			}
+			visited[parentID] = true
+			parentID = folderParents[parentID]
+		}
+		return false
+	}
 	for _, node := range s.nodes {
 		if node.Type != NodeTypePhrase {
+			continue
+		}
+		if !completionEnabled(node.ParentID) {
 			continue
 		}
 		if !strings.HasPrefix(strings.ToLower(node.Name), lowerQuery) {
@@ -332,7 +395,8 @@ func (s *PhraseStore) Match(query string, limit int) []Suggestion {
 }
 
 type PhraseService struct {
-	store *PhraseStore
+	store   *PhraseStore
+	changed func()
 }
 
 func NewPhraseService(store *PhraseStore) *PhraseService {
@@ -343,32 +407,53 @@ func (s *PhraseService) ListNodes() []PhraseNode {
 	return s.store.List()
 }
 
+func (s *PhraseService) notify(err error) error {
+	if err == nil && s.changed != nil {
+		s.changed()
+	}
+	return err
+}
+func (s *PhraseService) notifyNode(node PhraseNode, err error) (PhraseNode, error) {
+	if err == nil && s.changed != nil {
+		s.changed()
+	}
+	return node, err
+}
+
 func (s *PhraseService) CreateFolder(parentID string) (PhraseNode, error) {
-	return s.store.Create(parentID, NodeTypeFolder)
+	return s.notifyNode(s.store.Create(parentID, NodeTypeFolder))
 }
 
 func (s *PhraseService) CreatePhrase(parentID string) (PhraseNode, error) {
-	return s.store.Create(parentID, NodeTypePhrase)
+	return s.notifyNode(s.store.Create(parentID, NodeTypePhrase))
 }
 
 func (s *PhraseService) RenameNode(id, name string) error {
-	return s.store.Rename(id, name)
+	return s.notify(s.store.Rename(id, name))
 }
 
 func (s *PhraseService) UpdatePhrase(id, name, content string) error {
-	return s.store.UpdatePhrase(id, name, content)
+	return s.notify(s.store.UpdatePhrase(id, name, content))
+}
+
+func (s *PhraseService) SetFolderCompletion(id string, enabled bool) error {
+	return s.notify(s.store.SetFolderCompletion(id, enabled))
+}
+
+func (s *PhraseService) CreatePhraseWithContent(parentID, name, content string) (PhraseNode, error) {
+	return s.notifyNode(s.store.create(parentID, NodeTypePhrase, content, name))
 }
 
 func (s *PhraseService) DeleteNode(id string) error {
-	return s.store.Delete(id)
+	return s.notify(s.store.Delete(id))
 }
 
 func (s *PhraseService) UndoDelete(nodes []PhraseNode) error {
-	return s.store.UndoDelete(nodes)
+	return s.notify(s.store.UndoDelete(nodes))
 }
 
 func (s *PhraseService) CreateNode(parentID, kind, name string) (PhraseNode, error) {
-	return s.store.Create(parentID, NodeType(kind), name)
+	return s.notifyNode(s.store.Create(parentID, NodeType(kind), name))
 }
 
 // Move changes only the parent. Children retain their IDs and follow their folder.
@@ -408,4 +493,6 @@ func (s *PhraseStore) Move(id, parentID string) error {
 	}
 	return nil
 }
-func (s *PhraseService) MoveNode(id, parentID string) error { return s.store.Move(id, parentID) }
+func (s *PhraseService) MoveNode(id, parentID string) error {
+	return s.notify(s.store.Move(id, parentID))
+}

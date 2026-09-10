@@ -18,8 +18,14 @@ import (
 
 const hotkeyRegistryPath = `Software\quick-phrase`
 
-const browserWidth = 320
-const browserHeight = 360
+const browserWidth = 380
+const browserHeight = 480
+
+var (
+	procAttachThreadInputBrowser      = user32.NewProc("AttachThreadInput")
+	procBringWindowToTopBrowser       = user32.NewProc("BringWindowToTop")
+	procGetWindowThreadProcessBrowser = user32.NewProc("GetWindowThreadProcessId")
+)
 
 type hotkeySpec struct {
 	name           string
@@ -79,36 +85,45 @@ func parseHotkey(value string) (hotkeySpec, error) {
 }
 
 type hotkeyRequest struct {
+	kind   string
 	value  string
 	result chan error
 }
 
 type BrowserService struct {
-	window              *application.WebviewWindow
-	detailWindow        *application.WebviewWindow
-	detail              BrowserDetail
-	detailID            string
-	detailRow           rect
-	detailVisible       bool
-	detailTriggerActive bool
-	detailInitialised   bool
-	detailLeave         time.Time
-	store               *PhraseStore
-	monitor             *InputMonitor
-	mu                  sync.Mutex
-	visible             bool
-	target              uintptr
-	requestMu           sync.Mutex
-	threadID            uintptr
-	requests            chan hotkeyRequest
-	current             string
-	startupError        string
-	registryPath        string
-	done                chan struct{}
-	anchor              rect
-	dragging            bool
-	dragSession         uint64
-	initialised         bool
+	window                *application.WebviewWindow
+	manager               *application.WebviewWindow
+	detailWindow          *application.WebviewWindow
+	detail                BrowserDetail
+	detailID              string
+	detailRow             rect
+	detailVisible         bool
+	detailTriggerActive   bool
+	detailInitialised     bool
+	detailLeave           time.Time
+	store                 *PhraseStore
+	clipboard             *ClipboardService
+	monitor               *InputMonitor
+	mu                    sync.Mutex
+	visible               bool
+	pinned                bool
+	target                uintptr
+	targetFocus           uintptr
+	requestMu             sync.Mutex
+	threadID              uintptr
+	requests              chan hotkeyRequest
+	current               string
+	startupError          string
+	clipboardCurrent      string
+	clipboardStartupError string
+	activeTab             string
+	registryPath          string
+	done                  chan struct{}
+	anchor                rect
+	dragging              bool
+	dragSession           uint64
+	initialised           bool
+	showPending           bool
 }
 
 func (s *BrowserService) start() {
@@ -130,24 +145,33 @@ func (s *BrowserService) start() {
 		var message msg
 		user32.NewProc("PeekMessageW").Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0, 0)
 		s.threadID, _, _ = procGetCurrentThreadID.Call()
-		value := "Ctrl+Alt+Space"
+		values := map[string]string{"phrase": "Ctrl+Alt+Space", "clipboard": "Alt+V"}
 		key, err := registry.OpenKey(registry.CURRENT_USER, path, registry.QUERY_VALUE)
 		if err == nil {
 			if saved, _, e := key.GetStringValue("BrowserHotkey"); e == nil {
-				value = saved
+				values["phrase"] = saved
+			}
+			if saved, _, e := key.GetStringValue("ClipboardHotkey"); e == nil {
+				values["clipboard"] = saved
 			}
 			key.Close()
 		}
-		activeID := uintptr(1)
-		apply := func(value string, persist bool) error {
+		activeIDs := map[string]uintptr{"phrase": 1, "clipboard": 2}
+		stagingIDs := map[string]uintptr{"phrase": 3, "clipboard": 4}
+		apply := func(kind, value string, persist bool) error {
 			spec, err := parseHotkey(value)
 			if err != nil {
 				return err
 			}
-			if persist && spec.name == s.current && s.startupError == "" {
+			current, startupError := s.current, s.startupError
+			registryName := "BrowserHotkey"
+			if kind == "clipboard" {
+				current, startupError, registryName = s.clipboardCurrent, s.clipboardStartupError, "ClipboardHotkey"
+			}
+			if persist && spec.name == current && startupError == "" {
 				return nil
 			}
-			nextID := uintptr(3) - activeID
+			nextID := stagingIDs[kind]
 			if spec.key != 0 {
 				if ok, _, _ := register.Call(0, nextID, uintptr(spec.modifiers|0x4000), uintptr(spec.key)); ok == 0 {
 					return errors.New("快捷键已被占用，请选择其他组合")
@@ -156,7 +180,7 @@ func (s *BrowserService) start() {
 			if persist {
 				key, _, e := registry.CreateKey(registry.CURRENT_USER, path, registry.SET_VALUE)
 				if e == nil {
-					e = key.SetStringValue("BrowserHotkey", spec.name)
+					e = key.SetStringValue(registryName, spec.name)
 					key.Close()
 				}
 				if e != nil {
@@ -164,18 +188,26 @@ func (s *BrowserService) start() {
 					return e
 				}
 			}
-			unregister.Call(0, activeID)
-			activeID = nextID
-			s.current = spec.name
-			s.startupError = ""
+			unregister.Call(0, activeIDs[kind])
+			stagingIDs[kind], activeIDs[kind] = activeIDs[kind], nextID
+			if kind == "clipboard" {
+				s.clipboardCurrent, s.clipboardStartupError = spec.name, ""
+			} else {
+				s.current, s.startupError = spec.name, ""
+			}
 			return nil
 		}
-		if err := apply(value, false); err != nil {
-			s.current = value
-			s.startupError = err.Error()
+		for _, kind := range []string{"phrase", "clipboard"} {
+			if err := apply(kind, values[kind], false); err != nil {
+				if kind == "clipboard" {
+					s.clipboardCurrent, s.clipboardStartupError = values[kind], err.Error()
+				} else {
+					s.current, s.startupError = values[kind], err.Error()
+				}
+			}
 		}
 		close(ready)
-		defer func() { unregister.Call(0, activeID) }()
+		defer func() { unregister.Call(0, activeIDs["phrase"]); unregister.Call(0, activeIDs["clipboard"]) }()
 		for {
 			ret, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
 			if int32(ret) <= 0 {
@@ -183,10 +215,20 @@ func (s *BrowserService) start() {
 			}
 			switch message.Message {
 			case 0x0312:
-				go s.toggle()
+				kind := "phrase"
+				if message.WParam == activeIDs["clipboard"] {
+					kind = "clipboard"
+				}
+				// A registered Alt-only chord consumes the letter, leaving the
+				// target with what looks like a bare Alt tap. Mask that menu
+				// activation while Alt is still held, then show immediately.
+				if uint32(message.LParam)&3 == 1 && keyPressed(vkMenu) && !keyPressed(vkCtrl) {
+					maskAltMenuActivation()
+				}
+				go s.toggle(kind)
 			case 0x8001:
 				request := <-s.requests
-				request.result <- apply(request.value, true)
+				request.result <- apply(request.kind, request.value, true)
 			}
 		}
 	}()
@@ -210,18 +252,55 @@ func (s *BrowserService) GetHotkey() string {
 	defer s.requestMu.Unlock()
 	return s.current
 }
+func (s *BrowserService) GetActiveTab() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeTab == "clipboard" {
+		return "clipboard"
+	}
+	return "phrase"
+}
+func (s *BrowserService) GetPinned() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pinned
+}
+func (s *BrowserService) SetPinned(pinned bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pinned = pinned
+	if pinned {
+		s.captureCurrentTargetLocked()
+	}
+}
 func (s *BrowserService) GetHotkeyError() string {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
 	return s.startupError
 }
 func (s *BrowserService) SetHotkey(value string) error {
+	return s.setHotkey("phrase", value)
+}
+func (s *BrowserService) GetClipboardHotkey() string {
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	return s.clipboardCurrent
+}
+func (s *BrowserService) GetClipboardHotkeyError() string {
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	return s.clipboardStartupError
+}
+func (s *BrowserService) SetClipboardHotkey(value string) error {
+	return s.setHotkey("clipboard", value)
+}
+func (s *BrowserService) setHotkey(kind, value string) error {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
 	if s.threadID == 0 {
 		return errors.New("快捷键服务尚未启动")
 	}
-	request := hotkeyRequest{value, make(chan error, 1)}
+	request := hotkeyRequest{kind, value, make(chan error, 1)}
 	s.requests <- request
 	if ok, _, err := procPostThreadMessageW.Call(s.threadID, 0x8001, 0, 0); ok == 0 {
 		<-s.requests
@@ -230,15 +309,43 @@ func (s *BrowserService) SetHotkey(value string) error {
 	return <-request.result
 }
 
-func (s *BrowserService) toggle() {
+func maskAltMenuActivation() {
+	inputs := []keyboardInput{
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, ExtraInfo: quickPhraseInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, Flags: keyeventfKeyup, ExtraInfo: quickPhraseInputMarker}},
+	}
+	procSendInput.Call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(inputs[0]))
+}
+
+func (s *BrowserService) toggle(tab string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.showPending {
+		s.showPending = false
+		s.monitor.browserOpen.Store(false)
+		return
+	}
 	if s.visible {
+		if s.activeTab != tab {
+			s.activeTab = tab
+			s.window.EmitEvent("browser-tab", tab)
+			return
+		}
 		s.hide()
 		return
 	}
 	s.monitor.browserOpen.Store(true)
-	s.target, _, _ = procGetForegroundWindow.Call()
+	target, _, _ := procGetForegroundWindow.Call()
+	if target == 0 || target == uintptr(s.window.NativeWindow()) || (s.detailWindow != nil && target == uintptr(s.detailWindow.NativeWindow())) {
+		s.monitor.browserOpen.Store(false)
+		return
+	}
+	s.target = target
+	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	s.targetFocus = 0
+	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info))); ok != 0 {
+		s.targetFocus = uintptr(info.HwndFocus)
+	}
 	if s.monitor != nil && s.monitor.resetFn != nil {
 		s.monitor.resetFn()
 	}
@@ -255,10 +362,31 @@ func (s *BrowserService) toggle() {
 		s.monitor.browserOpen.Store(false)
 		return
 	}
-	s.window.EmitEvent("browser-refresh")
+	s.activeTab = tab
+	s.showPending = true
+	s.window.EmitEvent("browser-refresh", tab)
+}
+
+// ReadyToShow is called after React has committed the loading state. Keeping
+// the native window hidden until then prevents a stale frame or blank WebView
+// surface from flashing on the first opening.
+func (s *BrowserService) ReadyToShow() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.showPending || s.visible {
+		return
+	}
+	current, _, _ := procGetForegroundWindow.Call()
+	if current != s.target {
+		s.showPending = false
+		s.monitor.browserOpen.Store(false)
+		return
+	}
 	application.InvokeSync(func() {
 		hwnd := uintptr(s.window.NativeWindow())
-		ensurePopupNoActivate(hwnd)
+		index := int32(gwlExStyle)
+		style, _, _ := procGetWindowLongW.Call(hwnd, uintptr(uint32(index)))
+		procSetWindowLongW.Call(hwnd, uintptr(uint32(index)), style|wsExNoActivate)
 		s.positionLocked(hwnd)
 		if !s.initialised {
 			s.window.Show()
@@ -269,12 +397,15 @@ func (s *BrowserService) toggle() {
 			procSetForegroundWindow.Call(s.target)
 		}
 		procShowWindow.Call(hwnd, 4)
+		procSetWindowLongW.Call(hwnd, uintptr(uint32(index)), style)
 	})
+	s.showPending = false
 	s.visible = true
 }
 
 func (s *BrowserService) hide() {
 	s.hideDetailLocked()
+	s.showPending = false
 	s.dragging = false
 	s.dragSession++
 	s.monitor.browserOpen.Store(false)
@@ -283,6 +414,30 @@ func (s *BrowserService) hide() {
 	s.window.EmitEvent("browser-hidden")
 }
 func (s *BrowserService) Hide() { s.mu.Lock(); defer s.mu.Unlock(); s.hide() }
+
+func (s *BrowserService) OpenManager() {
+	s.mu.Lock()
+	s.hide()
+	manager := s.manager
+	s.mu.Unlock()
+	if manager != nil {
+		application.InvokeSync(func() { manager.Show().Focus() })
+	}
+}
+
+func (s *BrowserService) captureCurrentTargetLocked() bool {
+	foreground, _, _ := procGetForegroundWindow.Call()
+	if foreground == 0 || foreground == uintptr(s.window.NativeWindow()) || (s.detailWindow != nil && foreground == uintptr(s.detailWindow.NativeWindow())) {
+		return false
+	}
+	s.target = foreground
+	s.targetFocus = 0
+	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info))); ok != 0 {
+		s.targetFocus = uintptr(info.HwndFocus)
+	}
+	return true
+}
 
 // NOACTIVATE windows never receive normal blur notifications. Track the actual
 // input target and outside mouse presses without taking its keyboard focus.
@@ -297,7 +452,11 @@ func (s *BrowserService) watchForeground(done <-chan struct{}) {
 			s.mu.Lock()
 			if s.visible {
 				foreground, _, _ := procGetForegroundWindow.Call()
-				if foreground != s.target && foreground != uintptr(s.window.NativeWindow()) && (s.detailWindow == nil || foreground != uintptr(s.detailWindow.NativeWindow())) {
+				if s.pinned {
+					if foreground != uintptr(s.window.NativeWindow()) && (s.detailWindow == nil || foreground != uintptr(s.detailWindow.NativeWindow())) {
+						s.captureCurrentTargetLocked()
+					}
+				} else if foreground != s.target && foreground != uintptr(s.window.NativeWindow()) && (s.detailWindow == nil || foreground != uintptr(s.detailWindow.NativeWindow())) {
 					s.hide()
 				}
 			}
@@ -310,7 +469,7 @@ func (s *BrowserService) watchForeground(done <-chan struct{}) {
 func (s *BrowserService) mouseDown(root uintptr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.visible && root != uintptr(s.window.NativeWindow()) && !(s.detailVisible && root == uintptr(s.detailWindow.NativeWindow())) {
+	if s.visible && !s.pinned && root != uintptr(s.window.NativeWindow()) && !(s.detailVisible && root == uintptr(s.detailWindow.NativeWindow())) {
 		s.hide()
 	}
 }
@@ -328,7 +487,12 @@ func (s *BrowserService) positionLocked(hwnd uintptr) {
 		dpi = uintptr(x)
 	}
 	gap := scaleForDPI(4, dpi)
-	bounds := placePopup(anchor, info.Work, scaleForDPI(browserWidth, dpi), scaleForDPI(browserHeight, dpi), gap)
+	width, height := scaleForDPI(browserWidth, dpi), scaleForDPI(browserHeight, dpi)
+	var current rect
+	if ok, _, _ := getWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&current))); ok != 0 && current.Right > current.Left && current.Bottom > current.Top {
+		width, height = int(current.Right-current.Left), int(current.Bottom-current.Top)
+	}
+	bounds := placePopup(anchor, info.Work, width, height, gap)
 	procSetWindowPos.Call(hwnd, hwndTopmost, uintptr(int64(bounds.Left)), uintptr(int64(bounds.Top)), uintptr(bounds.Right-bounds.Left), uintptr(bounds.Bottom-bounds.Top), swpNoActivate)
 }
 
@@ -392,7 +556,12 @@ func (s *BrowserService) Insert(id string) error {
 		return errors.New("请先用快捷键打开短语浏览")
 	}
 	foreground, _, _ := procGetForegroundWindow.Call()
-	if s.target == 0 || foreground != s.target {
+	browserHWND := uintptr(s.window.NativeWindow())
+	if s.pinned && foreground != browserHWND && (s.detailWindow == nil || foreground != uintptr(s.detailWindow.NativeWindow())) {
+		s.captureCurrentTargetLocked()
+		foreground, _, _ = procGetForegroundWindow.Call()
+	}
+	if s.target == 0 || (!s.pinned && foreground != s.target && foreground != browserHWND) {
 		return errors.New("输入窗口已切换，请关闭悬浮框并在目标窗口重新按快捷键")
 	}
 	if keyPressed(vkCtrl) || keyPressed(vkMenu) || keyPressed(vkShift) || keyPressed(vkLWin) || keyPressed(vkRWin) {
@@ -404,12 +573,103 @@ func (s *BrowserService) Insert(id string) error {
 			if content == "" {
 				content = node.Name
 			}
+			if !s.pinned {
+				s.hide()
+			}
+			if err := s.restoreTargetLocked(); err != nil {
+				return err
+			}
 			if err := sendReplacement(0, content); err != nil {
 				return fmt.Errorf("输入失败: %w", err)
 			}
-			s.hide()
 			return nil
 		}
 	}
 	return errors.New("短语已被删除，请重新打开浏览窗口")
+}
+
+func (s *BrowserService) pasteClipboard(write func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.visible {
+		return errors.New("请先用快捷键打开剪贴板")
+	}
+	foreground, _, _ := procGetForegroundWindow.Call()
+	browserHWND := uintptr(s.window.NativeWindow())
+	if s.pinned && foreground != browserHWND && (s.detailWindow == nil || foreground != uintptr(s.detailWindow.NativeWindow())) {
+		s.captureCurrentTargetLocked()
+		foreground, _, _ = procGetForegroundWindow.Call()
+	}
+	if s.target == 0 || (!s.pinned && foreground != s.target && foreground != browserHWND) {
+		return errors.New("输入窗口已切换，请在目标窗口重新打开剪贴板")
+	}
+	if keyPressed(vkCtrl) || keyPressed(vkMenu) || keyPressed(vkShift) || keyPressed(vkLWin) || keyPressed(vkRWin) {
+		return errors.New("请松开修饰键后点击剪贴板项目")
+	}
+	if err := s.restoreTargetLocked(); err != nil {
+		return err
+	}
+	if err := write(); err != nil {
+		return err
+	}
+	current, _, _ := procGetForegroundWindow.Call()
+	if current != s.target {
+		return errors.New("输入窗口已切换，已取消粘贴")
+	}
+	if !s.pinned {
+		s.hide()
+	}
+	return sendCtrlV()
+}
+
+func (s *BrowserService) restoreTargetLocked() error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	currentThread, _, _ := procGetCurrentThreadID.Call()
+	for attempt := 0; attempt < 6; attempt++ {
+		foreground, _, _ := procGetForegroundWindow.Call()
+		foregroundThread, _, _ := procGetWindowThreadProcessBrowser.Call(foreground, 0)
+		targetThread, _, _ := procGetWindowThreadProcessBrowser.Call(s.target, 0)
+		attachedForeground := foregroundThread != 0 && foregroundThread != currentThread
+		attachedTarget := targetThread != 0 && targetThread != currentThread && targetThread != foregroundThread
+		if attachedForeground {
+			procAttachThreadInputBrowser.Call(currentThread, foregroundThread, 1)
+		}
+		if attachedTarget {
+			procAttachThreadInputBrowser.Call(currentThread, targetThread, 1)
+		}
+		procBringWindowToTopBrowser.Call(s.target)
+		procSetForegroundWindow.Call(s.target)
+		if s.targetFocus != 0 {
+			if ok, _, _ := user32.NewProc("IsChild").Call(s.target, s.targetFocus); ok != 0 || s.targetFocus == s.target {
+				user32.NewProc("SetFocus").Call(s.targetFocus)
+			}
+		}
+		if attachedTarget {
+			procAttachThreadInputBrowser.Call(currentThread, targetThread, 0)
+		}
+		if attachedForeground {
+			procAttachThreadInputBrowser.Call(currentThread, foregroundThread, 0)
+		}
+		time.Sleep(time.Duration(20+attempt*10) * time.Millisecond)
+		current, _, _ := procGetForegroundWindow.Call()
+		if current == s.target {
+			return nil
+		}
+	}
+	return errors.New("无法恢复原输入窗口，请重新打开悬浮框")
+}
+
+func sendCtrlV() error {
+	inputs := []keyboardInput{
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, ExtraInfo: quickPhraseInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: 0x56, ExtraInfo: quickPhraseInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: 0x56, Flags: keyeventfKeyup, ExtraInfo: quickPhraseInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, Flags: keyeventfKeyup, ExtraInfo: quickPhraseInputMarker}},
+	}
+	sent, _, err := procSendInput.Call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(inputs[0]))
+	if sent != uintptr(len(inputs)) {
+		return fmt.Errorf("SendInput: sent %d/%d events: %v", sent, len(inputs), err)
+	}
+	return nil
 }

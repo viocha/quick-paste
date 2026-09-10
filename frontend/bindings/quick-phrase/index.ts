@@ -3,16 +3,19 @@
 
 import * as BackupService from "./backupservice.js";
 import * as BrowserService from "./browserservice.js";
+import * as ClipboardService from "./clipboardservice.js";
 import * as PhraseService from "./phraseservice.js";
 import * as SettingsService from "./settingsservice.js";
 export {
     BackupService,
     BrowserService,
+    ClipboardService,
     PhraseService,
     SettingsService
 };
 
 export {
+    ClipboardKind,
     NodeType
 } from "./models.js";
 
@@ -22,5 +25,8 @@ export type {
     BackupPreview,
     BackupState,
     BrowserDetail,
+    ClipboardItem,
+    ClipboardLimits,
+    ClipboardStats,
     PhraseNode
 } from "./models.js";

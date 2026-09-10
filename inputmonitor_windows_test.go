@@ -11,7 +11,10 @@ import (
 func testInputState(t *testing.T) *windowsInputState {
 	t.Helper()
 	s := &windowsInputState{
-		monitor: &InputMonitor{store: &PhraseStore{nodes: []PhraseNode{{ID: "abc", Type: NodeTypePhrase, Name: "abc", Content: "completed"}}}},
+		monitor: &InputMonitor{store: &PhraseStore{nodes: []PhraseNode{
+			{ID: "folder", Type: NodeTypeFolder, Name: "Enabled", CompletionEnabled: true},
+			{ID: "abc", ParentID: "folder", Type: NodeTypePhrase, Name: "abc", Content: "completed"},
+		}}},
 		actions: make(chan struct{}, 1), done: make(chan struct{}), swallowKeyUp: make(map[uint32]bool),
 		showView: func(SuggestionPayload) {}, hideView: func() {}, replaceText: func(int, string) error { return nil },
 	}

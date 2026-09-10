@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -372,6 +373,13 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 
 	if s.monitor != nil && s.monitor.browserOpen.Load() {
 		if vk == vkEscape {
+			foreground, _, _ := procGetForegroundWindow.Call()
+			var processID uint32
+			procGetWindowThreadProcessID.Call(foreground, uintptr(unsafe.Pointer(&processID)))
+			if processID == uint32(os.Getpid()) {
+				// Let the focused WebView close its context menu or editor first.
+				return false
+			}
 			s.markKeyUpForSwallow(vk)
 			s.enqueue(s.monitor.closeBrowser)
 			return true

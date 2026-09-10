@@ -6,6 +6,8 @@ import { toast } from "@/components/ui/toast"
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react"
 import type { CSSProperties, DragEvent } from "react"
 import {
+  CheckIcon,
+  CircleHelpIcon,
   FileTextIcon,
   FolderIcon,
   FolderOpenIcon,
@@ -24,6 +26,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/compone
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { SettingsDialog } from "./SettingsDialog"
+import { HelpDialog } from "./HelpDialog"
 import {
   Collapsible,
   CollapsibleContent,
@@ -53,6 +56,8 @@ import {
 } from "@/components/ui/sidebar"
 import { Textarea } from "@/components/ui/textarea"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { canMove, childNodes, hasEnabledCompletionAncestor } from "./phrase-tree"
+import { PhraseDestinationTree } from "./PhraseDestinationTree"
 
 type NodeType = "folder" | "phrase"
 
@@ -63,6 +68,7 @@ type PhraseNode = {
   name: string
   content?: string
   order: number
+  completionEnabled?: boolean
 }
 
 type Suggestion = {
@@ -88,31 +94,9 @@ type TreeNodeProps = {
   onRenameCommit: (node: PhraseNode, name: string) => Promise<void>
   onRenameCancel: () => void
   onDelete: (node: PhraseNode) => void
+  onToggleCompletion: (node: PhraseNode) => Promise<void>
 }
 
-function childNodes(nodes: PhraseNode[], parentId = "") {
-  return nodes
-    .filter((node) => (node.parentId ?? "") === parentId)
-    .sort((a, b) => {
-      if (a.type !== b.type) return a.type === "folder" ? -1 : 1
-      if (a.id === "draft") return -1
-      if (b.id === "draft") return 1
-      return a.name.localeCompare(b.name, "zh-CN", { numeric: true }) || a.id.localeCompare(b.id)
-    })
-}
-
-function canMove(nodes: PhraseNode[], id: string, target: string): boolean {
-  if (!nodes.some(node => node.id === id)) return false
-  const seen = new Set([id])
-  while (target) {
-    if (seen.has(target)) return false
-    seen.add(target)
-    const folder = nodes.find(node => node.id === target)
-    if (!folder || folder.type !== "folder") return false
-    target = folder.parentId ?? ""
-  }
-  return true
-}
 const TreeActions = createContext<{
   dragged: string | null
   setDragged: (id: string | null) => void
@@ -131,6 +115,7 @@ function TreeNode({
   onRenameCommit,
   onRenameCancel,
   onDelete,
+  onToggleCompletion,
 }: TreeNodeProps) {
   const actions = useContext(TreeActions)!
   const [dropOver, setDropOver] = useState(false)
@@ -163,6 +148,7 @@ function TreeNode({
   }
   const children = useMemo(() => childNodes(nodes, node.id), [nodes, node.id])
   const childCount = children.filter(child => child.id !== "draft").length
+  const completionInherited = node.type === "folder" && hasEnabledCompletionAncestor(nodes, node)
   const [renameValue, setRenameValue] = useState(node.name)
   const [open, setOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -214,6 +200,10 @@ function TreeNode({
               <FolderPlusIcon />
               新建文件夹
             </ContextMenuItem>
+            <ContextMenuItem disabled={completionInherited} onClick={() => void onToggleCompletion(node)}>
+              {node.completionEnabled || completionInherited ? <CheckIcon /> : <span className="size-4" />}
+              {completionInherited ? "自动补全（已继承）" : "自动补全"}
+            </ContextMenuItem>
             <ContextMenuSeparator />
           </>
         )}
@@ -236,7 +226,8 @@ function TreeNode({
               <CollapsibleTrigger render={<SidebarMenuButton {...dragProps} tooltip={node.name} className={dropOver ? "bg-sidebar-accent ring-2 ring-inset ring-ring" : menuOpen ? "bg-sidebar-accent" : ""} />}>
                 {open ? <FolderOpenIcon /> : <FolderIcon />}
                 <span className="min-w-0 truncate">{node.name}</span>
-                {childCount > 0 && <span aria-hidden="true" title={`${childCount} 个子项`} className="ml-auto shrink-0 rounded-sm bg-sidebar-accent px-1.5 text-xs tabular-nums text-muted-foreground">{childCount}</span>}
+                {node.completionEnabled && <span className="shrink-0 rounded bg-primary/10 px-1 text-[9px] text-primary">补全</span>}
+                {childCount > 0 && <span aria-hidden="true" title={`${childCount} 个子项`} className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{childCount}</span>}
               </CollapsibleTrigger>
             </ContextMenuTrigger>
             {menu}
@@ -257,6 +248,7 @@ function TreeNode({
                     onRenameCommit={onRenameCommit}
                     onRenameCancel={onRenameCancel}
                     onDelete={onDelete}
+                    onToggleCompletion={onToggleCompletion}
                   />
                 ))}
               </SidebarMenuSub>
@@ -283,30 +275,6 @@ function TreeNode({
   )
 }
 
-function DestinationTree({ nodes, source, selected, onSelect, parentId = "" }: {
-  nodes: PhraseNode[]; source: string; selected: string; onSelect: (id: string) => void; parentId?: string
-}) {
-  return <ul role="group" className="ml-4">
-    {childNodes(nodes, parentId).map(node => <DestinationNode key={node.id} {...{node,nodes,source,selected,onSelect}} />)}
-  </ul>
-}
-function DestinationNode({node,nodes,source,selected,onSelect}: {
-  node: PhraseNode; nodes: PhraseNode[]; source: string; selected: string; onSelect: (id:string)=>void
-}) {
-  const [open,setOpen]=useState(false)
-  const childCount = node.type === "folder" ? childNodes(nodes, node.id).length : 0
-  const disabled=node.type!=="folder" || !canMove(nodes,source,node.id)
-  return <li role="treeitem" aria-selected={selected===node.id} aria-disabled={disabled} aria-expanded={node.type==="folder" ? open : undefined}>
-    <button type="button" disabled={disabled} onClick={()=>{onSelect(node.id); setOpen(!open)}}
-      className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:enabled:bg-accent ${selected===node.id ? "bg-accent" : ""}`}>
-      {node.type==="phrase" ? <FileTextIcon className="size-4" /> : open ? <FolderOpenIcon className="size-4" /> : <FolderIcon className="size-4" />}
-      <span className="min-w-0 truncate">{node.name}</span>
-      {childCount > 0 && <span aria-hidden="true" title={`${childCount} 个子项`} className="ml-auto shrink-0 rounded-sm bg-accent px-1.5 text-xs tabular-nums text-muted-foreground">{childCount}</span>}
-    </button>
-    {node.type==="folder" && open && <DestinationTree {...{nodes,source,selected,onSelect}} parentId={node.id} />}
-  </li>
-}
-
 function ManagerApp() {
   const tooltipDelay=useTooltipDelay()
   const tooltipTimeout=useTooltipTimeout()
@@ -315,6 +283,7 @@ function ManagerApp() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftNode, setDraftNode] = useState<PhraseNode | null>(null)
   const [settingsOpen,setSettingsOpen]=useState(false)
+  const [helpOpen,setHelpOpen]=useState(false)
   const deletePending=useRef(false)
   const [dragged,setDragged]=useState<string|null>(null)
   const [rootDropOver,setRootDropOver]=useState(false)
@@ -354,6 +323,8 @@ function ManagerApp() {
 
   useEffect(() => {
     void reload()
+    const cancel=Events.On("phrases-changed",()=>void reload())
+    return ()=>cancel()
   }, [])
 
 
@@ -454,6 +425,14 @@ function ManagerApp() {
     try { await PhraseService.MoveNode(id,target); await reload(); }
     catch(error) {toast.add({type:"error",title:"操作失败",description:String(error)});throw error}
   }
+  const toggleCompletion = async (node: PhraseNode) => {
+    try {
+      await PhraseService.SetFolderCompletion(node.id,!node.completionEnabled)
+      await reload()
+    } catch(error) {
+      toast.add({type:"error",title:"操作失败",description:String(error)})
+    }
+  }
   const submitMove = async () => {
     if (!moveNode || moving) return
     setMoving(true)
@@ -487,7 +466,10 @@ function ManagerApp() {
         <Sidebar collapsible="none">
           <SidebarHeader className="flex h-13 flex-row items-center justify-between border-b px-4">
             <div className="truncate text-sm font-semibold">快捷短语</div>
-            <Button variant="ghost" size="icon-sm" aria-label="设置" onClick={()=>void openSettings()}><SettingsIcon /></Button>
+            <div className="flex items-center">
+              <Button variant="ghost" size="icon-sm" aria-label="帮助" onClick={()=>setHelpOpen(true)}><CircleHelpIcon /></Button>
+              <Button variant="ghost" size="icon-sm" aria-label="设置" onClick={()=>void openSettings()}><SettingsIcon /></Button>
+            </div>
           </SidebarHeader>
 
           <ContextMenu>
@@ -509,6 +491,7 @@ function ManagerApp() {
                           onRenameCommit={renameNode}
                           onRenameCancel={cancelRename}
                           onDelete={node=>void deleteNodeNow(node)}
+                          onToggleCompletion={toggleCompletion}
                         />
                       ))}
                     </SidebarMenu>
@@ -557,12 +540,15 @@ function ManagerApp() {
                 </Field>
                 <Field className="min-h-0 flex-1">
                   <FieldLabel htmlFor="phrase-content">内容</FieldLabel>
-                  <ScrollArea className="min-h-0 flex-1 rounded-lg border border-input transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50">
+                  <ScrollArea
+                    className="min-h-0 flex-1 rounded-lg border border-input transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
+                    viewportClassName="[&>[data-slot=scroll-area-content]]:flex [&>[data-slot=scroll-area-content]]:min-h-full"
+                  >
                     <Textarea
                       id="phrase-content"
                       value={draftContent}
                       onChange={(event) => setDraftContent(event.target.value)}
-                      className="field-sizing-content min-h-full resize-none overflow-hidden rounded-none border-0 focus-visible:ring-0"
+                      className="field-sizing-content min-h-full flex-1 resize-none overflow-hidden rounded-none border-0 focus-visible:ring-0"
                     />
                   </ScrollArea>
                 </Field>
@@ -575,16 +561,17 @@ function ManagerApp() {
           )}
         </main>
 
+        <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} onRestored={restored} />
         <Dialog open={moveOpen} onOpenChange={open=>{if(!moving)setMoveOpen(open)}} onOpenChangeComplete={open=>{if(!open)setMoveNode(null)}}>
           <DialogContent className="flex h-[560px] max-h-[calc(100svh-2rem)] flex-col">
             <DialogTitle className="break-all pr-8 text-base font-medium">移动“{moveNode?.name}”</DialogTitle>
-            <DialogDescription className="text-sm text-muted-foreground">选择目标文件夹</DialogDescription>
+            <DialogDescription className="sr-only">选择目标文件夹</DialogDescription>
             <ScrollArea className="min-h-0 flex-1 rounded-md border">
               <div role="tree" aria-label="目标文件夹" className="p-1">
                 <div role="treeitem" aria-expanded="true" aria-selected={moveTarget===""}>
                   <button type="button" className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-sm ${moveTarget==="" ? "bg-accent" : "hover:bg-accent"}`} onClick={()=>setMoveTarget("")}><FolderOpenIcon className="size-4" />根目录</button>
-                  {moveNode && <DestinationTree nodes={nodes} source={moveNode.id} selected={moveTarget} onSelect={setMoveTarget} />}
+                  {moveNode && <PhraseDestinationTree nodes={nodes} source={moveNode.id} selected={moveTarget} onSelect={setMoveTarget} />}
                 </div>
               </div>
             </ScrollArea>

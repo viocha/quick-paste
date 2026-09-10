@@ -50,6 +50,47 @@ export interface BrowserDetail {
     "side": string;
     "arrowY": number;
     "scrollable": boolean;
+    "image"?: string;
+}
+
+export interface ClipboardItem {
+    "id": string;
+    "kind": ClipboardKind;
+    "preview": string;
+    "text"?: string;
+    "files"?: string[] | null;
+    "source"?: string;
+    "sourceIcon"?: string;
+    "createdAt": string;
+    "usedAt"?: string;
+    "pinned"?: boolean;
+    "hash": string;
+    "bytes": number;
+}
+
+export enum ClipboardKind {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    ClipboardText = "text",
+    ClipboardRich = "rich",
+    ClipboardImage = "image",
+    ClipboardFiles = "files",
+};
+
+export interface ClipboardLimits {
+    "maxItems": number;
+    "maxBytesMB": number;
+    "textItemMB": number;
+    "imageItemMB": number;
+}
+
+export interface ClipboardStats {
+    "items": number;
+    "pinned": number;
+    "bytes": number;
 }
 
 export enum NodeType {
@@ -69,4 +110,5 @@ export interface PhraseNode {
     "name": string;
     "content"?: string;
     "order": number;
+    "completionEnabled"?: boolean;
 }

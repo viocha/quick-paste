@@ -15,6 +15,7 @@ type BrowserDetail struct {
 	Side       string `json:"side"`
 	ArrowY     int    `json:"arrowY"`
 	Scrollable bool   `json:"scrollable"`
+	Image      string `json:"image,omitempty"`
 }
 
 func containsPoint(bounds rect, p point) bool {
@@ -92,6 +93,27 @@ func (s *BrowserService) ShowDetail(id string, top, height int) {
 		s.detailWindow.EmitEvent("browser-detail", s.detail)
 		return
 	}
+	if s.clipboard != nil {
+		for _, item := range s.clipboard.store.List("") {
+			if item.ID != id {
+				continue
+			}
+			s.hideDetailLocked()
+			s.detailID = id
+			s.detailTriggerActive = true
+			s.detailRow = row
+			if item.Kind == ClipboardImage {
+				s.detail.Image, _ = s.clipboard.previewData(id)
+				s.detail.Content = item.Preview
+			} else if text, err := s.clipboard.GetText(id); err == nil {
+				s.detail.Content = text
+			} else {
+				s.detail.Content = item.Preview
+			}
+			s.detailWindow.EmitEvent("browser-detail", s.detail)
+			return
+		}
+	}
 }
 
 // The detail WebView reports its rendered height before it is made visible,
@@ -165,6 +187,7 @@ func (s *BrowserService) DismissDetail() {
 func (s *BrowserService) hideDetailLocked() {
 	s.detail.Token++
 	s.detail.Content = ""
+	s.detail.Image = ""
 	s.detail.Scrollable = false
 	s.detailID = ""
 	s.detailTriggerActive = false

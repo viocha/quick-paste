@@ -60,7 +60,7 @@ export function BackupDiffDialog({preview,open,onOpenChange}: {preview:BackupPre
     </ToggleGroup>
    </div>
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-6">
-     <div className="shrink-0 text-xs">新增 {comparison.summary.added} · 修改 {comparison.summary.modified} · 删除 {comparison.summary.deleted}</div>
+     <div className="flex shrink-0 items-center divide-x divide-border text-xs"><span className="pr-3"><span className="text-muted-foreground">新增</span> <span className="font-medium tabular-nums">{comparison.summary.added}</span></span><span className="px-3"><span className="text-muted-foreground">修改</span> <span className="font-medium tabular-nums">{comparison.summary.modified}</span></span><span className="pl-3"><span className="text-muted-foreground">删除</span> <span className="font-medium tabular-nums">{comparison.summary.deleted}</span></span></div>
     {comparison.hasChanges ? <section className="min-h-0 flex flex-1 flex-col overflow-hidden rounded-lg border bg-background">
       <div className="flex h-9 shrink-0 items-center justify-between border-b px-3 text-xs">
       <span>backup.json</span>
