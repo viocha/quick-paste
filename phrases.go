@@ -52,7 +52,7 @@ func NewPhraseStore() (*PhraseStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(configDir, "quick-phrase")
+	dir := filepath.Join(configDir, "quick-paste")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}

@@ -1,7 +1,7 @@
 import { useTooltipDelay, useTooltipTimeout } from "./TooltipDelay"
 import { cloneElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react"
 import { FileTextIcon } from "lucide-react"
-import { BrowserService } from "../bindings/quick-phrase"
+import { BrowserService } from "../bindings/quick-paste"
 
 let detailRequests=Promise.resolve()
 let lastDetailClosedAt=0

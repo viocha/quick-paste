@@ -51,9 +51,10 @@ const (
 	vkDelete  = 0x2E
 	vkLWin    = 0x5B
 	vkRWin    = 0x5C
+	vkV       = 0x56
 	vkCapital = 0x14
 
-	quickPhraseInputMarker = 0x51504852
+	quickPasteInputMarker = 0x51504852
 
 	keyeventfKeyup   = 0x0002
 	keyeventfUnicode = 0x0004
@@ -160,6 +161,7 @@ type windowsInputState struct {
 	closed           bool
 	lastForeground   uintptr
 	swallowKeyUp     map[uint32]bool
+	winVDown         bool
 	actions          chan struct{}
 	actionMu         sync.Mutex
 	pending          []func()
@@ -200,7 +202,7 @@ func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 				return callNextHook(0, code, wParam, lParam)
 			}
 			data := (*kbdLLHookStruct)(unsafe.Pointer(lParam))
-			if data.DwExtraInfo == quickPhraseInputMarker {
+			if data.DwExtraInfo == quickPasteInputMarker {
 				return callNextHook(0, code, wParam, lParam)
 			}
 
@@ -359,6 +361,36 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 	isUp := message == wmKeyUp || message == wmSysKeyUp
 	if !isDown && !isUp {
 		return false
+	}
+
+	if vk == vkV {
+		s.mu.Lock()
+		winVDown := s.winVDown
+		if isUp && winVDown {
+			s.winVDown = false
+		}
+		s.mu.Unlock()
+		if isUp && winVDown {
+			return true
+		}
+		if isDown && winVDown {
+			return true
+		}
+		if isDown && s.monitor.takeOverWinV != nil && s.monitor.takeOverWinV() &&
+			(keyPressed(vkLWin) || keyPressed(vkRWin)) &&
+			!keyPressed(vkCtrl) && !keyPressed(vkMenu) && !keyPressed(vkShift) {
+			s.mu.Lock()
+			s.winVDown = true
+			s.mu.Unlock()
+			// V is swallowed, so Windows would otherwise see a bare Win tap
+			// and open Start when Win is released. A harmless Ctrl tap marks
+			// the Win chord as used without leaving a modifier stuck down.
+			maskBareModifierActivation()
+			if s.monitor.openClipboard != nil {
+				s.enqueue(s.monitor.openClipboard)
+			}
+			return true
+		}
 	}
 
 	if isUp {
@@ -709,14 +741,14 @@ func sendReplacement(backspaces int, text string) error {
 	inputs := make([]keyboardInput, 0, backspaces*2+len(text)*2)
 	for i := 0; i < backspaces; i++ {
 		inputs = append(inputs,
-			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, ExtraInfo: quickPhraseInputMarker}},
-			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, Flags: keyeventfKeyup, ExtraInfo: quickPhraseInputMarker}},
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, ExtraInfo: quickPasteInputMarker}},
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 		)
 	}
 	for _, unit := range utf16.Encode([]rune(text)) {
 		inputs = append(inputs,
-			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode, ExtraInfo: quickPhraseInputMarker}},
-			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode | keyeventfKeyup, ExtraInfo: quickPhraseInputMarker}},
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode, ExtraInfo: quickPasteInputMarker}},
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode | keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 		)
 	}
 	if len(inputs) == 0 {

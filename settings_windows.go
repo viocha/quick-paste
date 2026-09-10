@@ -11,7 +11,7 @@ import (
 )
 
 const startupRegistryPath = `Software\Microsoft\Windows\CurrentVersion\Run`
-const startupValueName = "quick-phrase"
+const startupValueName = "quick-paste"
 
 type SettingsService struct {
 	registryPath string
@@ -22,7 +22,7 @@ func (s *SettingsService) preferencesPath() string {
 	if s.registryPath != "" {
 		return s.registryPath
 	}
-	return `Software\quick-phrase`
+	return `Software\quick-paste`
 }
 
 func (s *SettingsService) GetTooltipDelay() (int, error) {

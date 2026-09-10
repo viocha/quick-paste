@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -16,7 +17,7 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-const hotkeyRegistryPath = `Software\quick-phrase`
+const hotkeyRegistryPath = `Software\quick-paste`
 
 const browserWidth = 380
 const browserHeight = 480
@@ -116,6 +117,7 @@ type BrowserService struct {
 	startupError          string
 	clipboardCurrent      string
 	clipboardStartupError string
+	winVTakeover          atomic.Bool
 	activeTab             string
 	registryPath          string
 	done                  chan struct{}
@@ -146,6 +148,7 @@ func (s *BrowserService) start() {
 		user32.NewProc("PeekMessageW").Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0, 0)
 		s.threadID, _, _ = procGetCurrentThreadID.Call()
 		values := map[string]string{"phrase": "Ctrl+Alt+Space", "clipboard": "Alt+V"}
+		s.winVTakeover.Store(false)
 		key, err := registry.OpenKey(registry.CURRENT_USER, path, registry.QUERY_VALUE)
 		if err == nil {
 			if saved, _, e := key.GetStringValue("BrowserHotkey"); e == nil {
@@ -153,6 +156,9 @@ func (s *BrowserService) start() {
 			}
 			if saved, _, e := key.GetStringValue("ClipboardHotkey"); e == nil {
 				values["clipboard"] = saved
+			}
+			if saved, _, e := key.GetIntegerValue("WinVTakeover"); e == nil {
+				s.winVTakeover.Store(saved != 0)
 			}
 			key.Close()
 		}
@@ -223,7 +229,7 @@ func (s *BrowserService) start() {
 				// target with what looks like a bare Alt tap. Mask that menu
 				// activation while Alt is still held, then show immediately.
 				if uint32(message.LParam)&3 == 1 && keyPressed(vkMenu) && !keyPressed(vkCtrl) {
-					maskAltMenuActivation()
+					maskBareModifierActivation()
 				}
 				go s.toggle(kind)
 			case 0x8001:
@@ -294,6 +300,30 @@ func (s *BrowserService) GetClipboardHotkeyError() string {
 func (s *BrowserService) SetClipboardHotkey(value string) error {
 	return s.setHotkey("clipboard", value)
 }
+
+func (s *BrowserService) GetWinVTakeover() bool { return s.winVTakeover.Load() }
+
+func (s *BrowserService) SetWinVTakeover(enabled bool) error {
+	path := s.registryPath
+	if path == "" {
+		path = hotkeyRegistryPath
+	}
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, path, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	var value uint32
+	if enabled {
+		value = 1
+	}
+	if err := key.SetDWordValue("WinVTakeover", value); err != nil {
+		return err
+	}
+	s.winVTakeover.Store(enabled)
+	return nil
+}
+
 func (s *BrowserService) setHotkey(kind, value string) error {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
@@ -309,10 +339,10 @@ func (s *BrowserService) setHotkey(kind, value string) error {
 	return <-request.result
 }
 
-func maskAltMenuActivation() {
+func maskBareModifierActivation() {
 	inputs := []keyboardInput{
-		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, ExtraInfo: quickPhraseInputMarker}},
-		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, Flags: keyeventfKeyup, ExtraInfo: quickPhraseInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, ExtraInfo: quickPasteInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 	}
 	procSendInput.Call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(inputs[0]))
 }
@@ -662,10 +692,10 @@ func (s *BrowserService) restoreTargetLocked() error {
 
 func sendCtrlV() error {
 	inputs := []keyboardInput{
-		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, ExtraInfo: quickPhraseInputMarker}},
-		{Type: inputKeyboard, Ki: keybdInput{Vk: 0x56, ExtraInfo: quickPhraseInputMarker}},
-		{Type: inputKeyboard, Ki: keybdInput{Vk: 0x56, Flags: keyeventfKeyup, ExtraInfo: quickPhraseInputMarker}},
-		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, Flags: keyeventfKeyup, ExtraInfo: quickPhraseInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, ExtraInfo: quickPasteInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: 0x56, ExtraInfo: quickPasteInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: 0x56, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 	}
 	sent, _, err := procSendInput.Call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(inputs[0]))
 	if sent != uintptr(len(inputs)) {

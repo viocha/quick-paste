@@ -57,6 +57,10 @@ export function GetPinned(): $CancellablePromise<boolean> {
     return $Call.ByID(2483798437);
 }
 
+export function GetWinVTakeover(): $CancellablePromise<boolean> {
+    return $Call.ByID(4261001862);
+}
+
 export function Hide(): $CancellablePromise<void> {
     return $Call.ByID(2850774001);
 }
@@ -92,6 +96,10 @@ export function SetHotkey(value: string): $CancellablePromise<void> {
 
 export function SetPinned(pinned: boolean): $CancellablePromise<void> {
     return $Call.ByID(2726139897, pinned);
+}
+
+export function SetWinVTakeover(enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2194154138, enabled);
 }
 
 export function ShowDetail(id: string, top: number, height: number): $CancellablePromise<void> {

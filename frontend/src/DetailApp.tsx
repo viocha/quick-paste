@@ -1,7 +1,7 @@
 import { useTooltipDelay, useTooltipTimeout } from "./TooltipDelay"
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react"
 import { Events } from "@wailsio/runtime"
-import { BrowserService, type BrowserDetail } from "../bindings/quick-phrase"
+import { BrowserService, type BrowserDetail } from "../bindings/quick-paste"
 import { Tooltip, TooltipContent, TooltipProvider } from "@/components/ui/tooltip"
 import { ScrollArea } from "@/components/ui/scroll-area"
 

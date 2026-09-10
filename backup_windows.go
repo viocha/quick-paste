@@ -207,7 +207,7 @@ func backupDirectory(server string) (*url.URL, error) {
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("请输入有效的 http 或 https WebDAV 目录地址，不要在地址中包含账号密码")
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/quick-phrase/"
+	u.Path = strings.TrimRight(u.Path, "/") + "/quick-paste/"
 	u.RawPath = ""
 	return u, nil
 }

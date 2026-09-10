@@ -13,6 +13,8 @@ type InputMonitor struct {
 	browserOpen      atomic.Bool
 	closeBrowser     func()
 	browserMouseDown func(uintptr)
+	takeOverWinV     func() bool
+	openClipboard    func()
 }
 
 func NewInputMonitor(app *application.App, manager, popup *application.WebviewWindow, store *PhraseStore) *InputMonitor {

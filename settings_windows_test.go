@@ -14,13 +14,13 @@ func TestStartupMode(t *testing.T) {
 	if isAutostart([]string{"app.exe"}) || !isAutostart([]string{"app.exe", "--autostart"}) {
 		t.Fatal("incorrect startup mode")
 	}
-	if got := startupCommand(`C:\Program Files\quick-phrase.exe`); got != `"C:\Program Files\quick-phrase.exe" --autostart` {
+	if got := startupCommand(`C:\Program Files\quick-paste.exe`); got != `"C:\Program Files\quick-paste.exe" --autostart` {
 		t.Fatalf("command: %q", got)
 	}
 }
 
 func TestTooltipDelayPersistsAndValidates(t *testing.T) {
-	path := fmt.Sprintf(`Software\quick-phrase-tooltip-test-%d`, time.Now().UnixNano())
+	path := fmt.Sprintf(`Software\quick-paste-tooltip-test-%d`, time.Now().UnixNano())
 	defer registry.DeleteKey(registry.CURRENT_USER, path)
 	s := &SettingsService{registryPath: path}
 	if value, err := s.GetTooltipDelay(); err != nil || value != 500 {
@@ -45,7 +45,7 @@ func TestTooltipDelayPersistsAndValidates(t *testing.T) {
 	}
 }
 func TestTooltipTimeoutPersistsAndValidates(t *testing.T) {
-	path := fmt.Sprintf(`Software\quick-phrase-tooltip-timeout-test-%d`, time.Now().UnixNano())
+	path := fmt.Sprintf(`Software\quick-paste-tooltip-timeout-test-%d`, time.Now().UnixNano())
 	defer registry.DeleteKey(registry.CURRENT_USER, path)
 	s := &SettingsService{registryPath: path}
 	if value, err := s.GetTooltipTimeout(); err != nil || value != 0 {
@@ -67,7 +67,7 @@ func TestTooltipTimeoutPersistsAndValidates(t *testing.T) {
 }
 func TestAutostartSettingsRoundTrip(t *testing.T) {
 	// Exercise registry writes in an isolated key, never enable real login startup.
-	path := fmt.Sprintf(`Software\quick-phrase-test-%d`, time.Now().UnixNano())
+	path := fmt.Sprintf(`Software\quick-paste-test-%d`, time.Now().UnixNano())
 	defer registry.DeleteKey(registry.CURRENT_USER, path)
 	s := &SettingsService{registryPath: path}
 	if enabled, err := s.GetAutostart(); err != nil || enabled {

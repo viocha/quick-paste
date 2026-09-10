@@ -29,12 +29,12 @@ func TestWebDAVBackupRestoreAndSchedule(t *testing.T) {
 			w.WriteHeader(401)
 			return
 		}
-		if !strings.HasPrefix(r.URL.Path, "/dav/quick-phrase/") {
+		if !strings.HasPrefix(r.URL.Path, "/dav/quick-paste/") {
 			t.Errorf("unexpected path %s", r.URL.Path)
 			w.WriteHeader(404)
 			return
 		}
-		name := strings.TrimPrefix(r.URL.Path, "/dav/quick-phrase/")
+		name := strings.TrimPrefix(r.URL.Path, "/dav/quick-paste/")
 		switch r.Method {
 		case "MKCOL":
 			w.WriteHeader(201)
@@ -58,7 +58,7 @@ func TestWebDAVBackupRestoreAndSchedule(t *testing.T) {
 			w.WriteHeader(207)
 			fmt.Fprint(w, `<d:multistatus xmlns:d="DAV:">`)
 			for name, data := range files {
-				fmt.Fprintf(w, `<d:response><d:href>/dav/quick-phrase/%s</d:href><d:propstat><d:prop><d:getcontentlength>%d</d:getcontentlength><d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`, name, len(data))
+				fmt.Fprintf(w, `<d:response><d:href>/dav/quick-paste/%s</d:href><d:propstat><d:prop><d:getcontentlength>%d</d:getcontentlength><d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`, name, len(data))
 			}
 			fmt.Fprint(w, `</d:multistatus>`)
 		default:

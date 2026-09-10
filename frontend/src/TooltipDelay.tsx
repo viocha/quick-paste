@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react"
 import { Events } from "@wailsio/runtime"
-import { SettingsService } from "../bindings/quick-phrase"
+import { SettingsService } from "../bindings/quick-paste"
 
 const TooltipDelayContext=createContext(500)
 const TooltipTimeoutContext=createContext(0)

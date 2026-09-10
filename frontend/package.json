@@ -1,5 +1,5 @@
 {
-  "name": "quick-phrase-frontend",
+  "name": "quick-paste-frontend",
   "private": true,
   "packageManager": "bun@1.4.1",
   "version": "0.0.0",

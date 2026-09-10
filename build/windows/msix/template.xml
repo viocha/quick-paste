@@ -8,27 +8,27 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="quick-phrase.exe"
+        Path="quick-paste.exe"
         Arguments=""
-        InstallLocation="C:\Program Files\My Company\quick-phrase">
+        InstallLocation="C:\Program Files\My Company\quick-paste">
     </Installer>
     <PackageInformation
-        PackageName="quick-phrase"
-        PackageDisplayName="quick-phrase"
+        PackageName="quick-paste"
+        PackageDisplayName="quick-paste"
         PublisherName="CN=My Company"
         PublisherDisplayName="My Company"
         Version="0.1.0.0"
-        PackageDescription="快捷短语">
+        PackageDescription="快捷粘贴">
         <Capabilities>
             <Capability Name="runFullTrust" />
             
         </Capabilities>
         <Applications>
             <Application
-                Id="com.local.quickphrase"
-                Description="快捷短语"
-                DisplayName="quick-phrase"
-                ExecutableName="quick-phrase.exe"
+                Id="com.local.quickpaste"
+                Description="快捷粘贴"
+                DisplayName="quick-paste"
+                ExecutableName="quick-paste.exe"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -41,13 +41,13 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>quick-phrase</DisplayName>
+            <DisplayName>quick-paste</DisplayName>
             <PublisherDisplayName>My Company</PublisherDisplayName>
-            <Description>快捷短语</Description>
+            <Description>快捷粘贴</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="quick-phrase.msix" />
+    <SaveLocation PackagePath="quick-paste.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>

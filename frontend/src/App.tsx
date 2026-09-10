@@ -20,8 +20,8 @@ import {
 } from "lucide-react"
 import { Events } from "@wailsio/runtime"
 
-import { PhraseService } from "../bindings/quick-phrase"
-import type { PhraseNode as BindingPhraseNode } from "../bindings/quick-phrase"
+import { PhraseService } from "../bindings/quick-paste"
+import type { PhraseNode as BindingPhraseNode } from "../bindings/quick-paste"
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -123,7 +123,7 @@ function TreeNode({
     draggable: true,
     onDragStart: (event: DragEvent<HTMLElement>) => {
       event.stopPropagation()
-      event.dataTransfer.setData("application/x-quick-phrase-node", node.id)
+      event.dataTransfer.setData("application/x-quick-paste-node", node.id)
       event.dataTransfer.effectAllowed = "move"
       actions.setDragged(node.id)
     },
@@ -139,7 +139,7 @@ function TreeNode({
     },
     onDrop: (event: DragEvent<HTMLElement>) => {
       event.preventDefault(); event.stopPropagation(); setDropOver(false)
-      const id = event.dataTransfer.getData("application/x-quick-phrase-node")
+      const id = event.dataTransfer.getData("application/x-quick-paste-node")
       actions.setDragged(null)
       if (node.type === "folder" && canMove(nodes, id, node.id)) {
         setOpen(true); void actions.move(id, node.id)
@@ -505,7 +505,7 @@ function ManagerApp() {
                   onDragLeave={()=>setRootDropOver(false)}
                   onDrop={event=>{
                     event.preventDefault();event.stopPropagation();setRootDropOver(false)
-                    const id=event.dataTransfer.getData("application/x-quick-phrase-node")
+                    const id=event.dataTransfer.getData("application/x-quick-paste-node")
                     setDragged(null)
                     if (canMove(nodes,id,"")) void move(id,"").catch(()=>{})
                   }}

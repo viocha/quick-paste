@@ -6,9 +6,9 @@
 		"0000": {
 			"ProductVersion": "0.1.0",
 			"CompanyName": "My Company",
-			"FileDescription": "快捷短语",
+			"FileDescription": "快捷粘贴",
 			"LegalCopyright": "© 2026, My Company",
-			"ProductName": "quick-phrase",
+			"ProductName": "quick-paste",
 			"Comments": "This is a comment"
 		}
 	}

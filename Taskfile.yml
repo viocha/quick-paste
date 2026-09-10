@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  APP_NAME: quick-phrase
+  APP_NAME: quick-paste
   BIN_DIR: bin
   VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
 

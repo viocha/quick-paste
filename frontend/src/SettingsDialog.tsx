@@ -2,9 +2,9 @@ import { useTooltipDelay, useTooltipTimeout } from "./TooltipDelay"
 import { toast } from "@/components/ui/toast"
 import { useEffect, useRef, useState } from "react"
 import { FolderOpenIcon, UploadIcon, EyeIcon, EyeOffIcon, SaveIcon, PlugIcon, GitCompareIcon, DownloadIcon } from "lucide-react"
-import { Switch } from "@base-ui/react/switch"
-import { BackupService, SettingsService, BrowserService, ClipboardService } from "../bindings/quick-phrase"
-import type { BackupConfig, BackupState, BackupPreview, ClipboardLimits, ClipboardStats } from "../bindings/quick-phrase"
+import { Switch } from "@/components/ui/switch"
+import { BackupService, SettingsService, BrowserService, ClipboardService } from "../bindings/quick-paste"
+import type { BackupConfig, BackupState, BackupPreview, ClipboardLimits, ClipboardStats } from "../bindings/quick-paste"
 import { BackupDiffDialog } from "./BackupDiffDialog"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
@@ -21,10 +21,7 @@ const formatBytes = (value: number) => {
  return `${unit===0||size>=10?Math.round(size):size.toFixed(1)} ${units[unit]}`
 }
 function Toggle({checked,disabled,onChange,label}: {checked:boolean;disabled:boolean;onChange:(value:boolean)=>void;label:string}) {
- return <Switch.Root checked={checked} disabled={disabled} onCheckedChange={onChange} aria-label={label}
-  className="inline-flex h-5 w-9 shrink-0 items-center rounded-full bg-input p-0.5 outline-none data-checked:bg-primary focus-visible:ring-2 focus-visible:ring-ring data-disabled:opacity-50">
-  <Switch.Thumb className="size-4 rounded-full bg-background shadow-sm transition-transform data-checked:translate-x-4" />
- </Switch.Root>
+ return <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} aria-label={label} />
 }
 export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onOpenChange:(value:boolean)=>void;onRestored:()=>Promise<void>}) {
  const tooltipDelay=useTooltipDelay()
@@ -44,6 +41,7 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
  const [clipboardHotkey,setClipboardHotkey]=useState("")
  const [savedClipboardHotkey,setSavedClipboardHotkey]=useState("")
  const [clipboardHotkeyError,setClipboardHotkeyError]=useState("")
+ const [winVTakeover,setWinVTakeover]=useState(false)
  const [clipboardLimits,setClipboardLimits]=useState<ClipboardLimits>(defaultClipboardLimits)
  const [savedClipboardLimits,setSavedClipboardLimits]=useState<ClipboardLimits>(defaultClipboardLimits)
  const [clipboardStats,setClipboardStats]=useState<ClipboardStats>({items:0,pinned:0,bytes:0})
@@ -70,7 +68,7 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
    setAutostart(enabled);setState(value);setConfig({server:value.server,username:value.username,automatic:value.automatic,intervalHours:value.intervalHours});setPassword(currentPassword);setSavedPassword(currentPassword);setShowPassword(false)
   }).catch(error=>{if(active)toast.add({type:"error",title:"操作失败",description:String(error)})})
   const hotkeyRequest=Promise.all([BrowserService.GetHotkey(),BrowserService.GetHotkeyError()]).then(([value,error])=>{if(active){setHotkey(value);setSavedHotkey(value);setHotkeyError(error)}}).catch(error=>{if(active)setHotkeyError(String(error))})
-  const clipboardRequest=Promise.all([ClipboardService.GetEnabled(),BrowserService.GetClipboardHotkey(),BrowserService.GetClipboardHotkeyError(),ClipboardService.GetLimits(),ClipboardService.GetStats()]).then(([enabled,value,error,limits,stats])=>{if(active){setClipboardEnabled(enabled);setClipboardHotkey(value);setSavedClipboardHotkey(value);setClipboardHotkeyError(error);setClipboardLimits(limits);setSavedClipboardLimits(limits);setClipboardStats(stats)}}).catch(error=>{if(active)setClipboardHotkeyError(String(error))})
+  const clipboardRequest=Promise.all([ClipboardService.GetEnabled(),BrowserService.GetClipboardHotkey(),BrowserService.GetClipboardHotkeyError(),BrowserService.GetWinVTakeover(),ClipboardService.GetLimits(),ClipboardService.GetStats()]).then(([enabled,value,error,takeover,limits,stats])=>{if(active){setClipboardEnabled(enabled);setClipboardHotkey(value);setSavedClipboardHotkey(value);setClipboardHotkeyError(error);setWinVTakeover(takeover);setClipboardLimits(limits);setSavedClipboardLimits(limits);setClipboardStats(stats)}}).catch(error=>{if(active)setClipboardHotkeyError(String(error))})
   void Promise.allSettled([generalRequest,hotkeyRequest,clipboardRequest]).then(()=>{if(active)setLoading(false)})
   const timer=setInterval(()=>{void BackupService.GetState().then(value=>{if(active)setState(value)}).catch(()=>{});void ClipboardService.GetStats().then(value=>{if(active)setClipboardStats(value)}).catch(()=>{})},3000)
   return ()=>{active=false;clearInterval(timer)}
@@ -141,6 +139,7 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
        }}/>
        {clipboardHotkeyError&&<p role="alert" className="text-xs text-destructive">{clipboardHotkeyError}</p>}
        <div className="flex gap-2"><Button disabled={isBusy("clipboard-hotkey")||(clipboardHotkey===savedClipboardHotkey&&!clipboardHotkeyError)} onClick={()=>void run("clipboard-hotkey",async()=>{await BrowserService.SetClipboardHotkey(clipboardHotkey);setSavedClipboardHotkey(clipboardHotkey);setClipboardHotkeyError("")})}>保存快捷键</Button><Button variant="outline" onClick={()=>setClipboardHotkey("")}>清空</Button></div>
+       <div className="flex items-center justify-between gap-4"><span className="text-sm">接管 Win + V</span><Toggle label="接管 Win + V" checked={winVTakeover} disabled={isBusy("win-v-takeover")} onChange={value=>void run("win-v-takeover",async()=>{await BrowserService.SetWinVTakeover(value);setWinVTakeover(value)})}/></div>
       </section>
       <section className="space-y-3 border-t pt-5">
        <h2 className="text-sm font-medium">存储上限</h2>
@@ -162,7 +161,7 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
       <section className="space-y-3 border-t pt-5"><h2 className="text-sm font-medium">历史管理</h2><div className="flex gap-2"><Button variant="outline" disabled={isBusy("clear-clipboard")} onClick={()=>void run("clear-clipboard",async()=>{await ClipboardService.Clear(false);setClipboardStats(await ClipboardService.GetStats())})}>清空未置顶</Button><Button disabled={isBusy("clear-all-clipboard")} onClick={()=>void run("clear-all-clipboard",async()=>{await ClipboardService.Clear(true);setClipboardStats(await ClipboardService.GetStats())})}>清空全部</Button></div></section>
      </div>}
      {tab==="webdav" && <form className="space-y-5" onSubmit={event=>{event.preventDefault();void run("save",async()=>{await BackupService.SaveConfig(config,password);const next=await BackupService.GetState();setState(next);setSavedPassword(password);setPreview(null);setDiffOpen(false)})}}>
-      <div className="space-y-2"><label htmlFor="dav-server" className="text-sm font-medium">服务器目录地址</label><Input id="dav-server" type="url" value={config.server} onChange={e=>setConfig({...config,server:e.target.value})} placeholder="https://example.com/dav/" /><p className="text-xs text-muted-foreground">保存路径：quick-phrase/backup.json</p></div>
+      <div className="space-y-2"><label htmlFor="dav-server" className="text-sm font-medium">服务器目录地址</label><Input id="dav-server" type="url" value={config.server} onChange={e=>setConfig({...config,server:e.target.value})} placeholder="https://example.com/dav/" /><p className="text-xs text-muted-foreground">保存路径：quick-paste/backup.json</p></div>
       <div className="grid grid-cols-2 gap-4"><div className="space-y-2"><label htmlFor="dav-user" className="text-sm font-medium">账号</label><Input id="dav-user" autoComplete="off" value={config.username} onChange={e=>setConfig({...config,username:e.target.value})} /></div><div className="space-y-2"><label htmlFor="dav-password" className="text-sm font-medium">密码</label><div className="relative"><Input id="dav-password" className="pr-10" type={showPassword ? "text" : "password"} autoComplete="new-password" value={password} onChange={e=>setPassword(e.target.value)} /><div className="absolute inset-y-0 right-1 flex items-center"><Button type="button" variant="ghost" size="icon-sm" aria-label={showPassword ? "隐藏密码" : "显示密码"} onClick={()=>setShowPassword(value=>!value)}>{showPassword ? <EyeOffIcon /> : <EyeIcon />}</Button></div></div></div></div>
       <div className="flex items-center justify-between gap-4 border-t pt-5"><label className="text-sm font-medium">自动备份</label><Toggle label="自动备份" checked={config.automatic} disabled={false} onChange={automatic=>setConfig({...config,automatic})} /></div>
       <div className="flex items-center gap-3"><label htmlFor="backup-hours" className="text-sm">每</label><Input id="backup-hours" aria-label="备份间隔小时" type="number" min={1} max={168} step={1} className="w-20" value={config.intervalHours} onChange={e=>setConfig({...config,intervalHours:Number(e.target.value)})} /><span className="text-sm">小时备份一次</span></div>

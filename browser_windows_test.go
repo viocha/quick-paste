@@ -32,7 +32,7 @@ func TestParseHotkey(t *testing.T) {
 
 func TestGlobalHotkeyPersistenceAndConflict(t *testing.T) {
 	makeService := func(suffix string) *BrowserService {
-		path := fmt.Sprintf(`Software\quick-phrase-hotkey-test-%d-%s`, time.Now().UnixNano(), suffix)
+		path := fmt.Sprintf(`Software\quick-paste-hotkey-test-%d-%s`, time.Now().UnixNano(), suffix)
 		key, _, err := registry.CreateKey(registry.CURRENT_USER, path, registry.SET_VALUE)
 		if err != nil {
 			t.Fatal(err)
@@ -91,5 +91,43 @@ func TestGlobalHotkeyPersistenceAndConflict(t *testing.T) {
 	first.start()
 	if first.GetHotkey() != "" {
 		t.Fatal("disabled setting was not restored")
+	}
+}
+
+func TestWinVTakeoverPersistence(t *testing.T) {
+	path := fmt.Sprintf(`Software\quick-paste-win-v-test-%d`, time.Now().UnixNano())
+	defer registry.DeleteKey(registry.CURRENT_USER, path)
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, path, registry.SET_VALUE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := key.SetStringValue("BrowserHotkey", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := key.SetStringValue("ClipboardHotkey", ""); err != nil {
+		t.Fatal(err)
+	}
+	key.Close()
+
+	service := &BrowserService{registryPath: path}
+	service.start()
+	if service.GetWinVTakeover() {
+		t.Fatal("Win+V takeover should be disabled by default")
+	}
+	if err := service.SetWinVTakeover(true); err != nil {
+		t.Fatal(err)
+	}
+	service.stop()
+
+	service.start()
+	defer service.stop()
+	if !service.GetWinVTakeover() {
+		t.Fatal("Win+V takeover was not restored")
+	}
+	if err := service.SetWinVTakeover(false); err != nil {
+		t.Fatal(err)
+	}
+	if service.GetWinVTakeover() {
+		t.Fatal("Win+V takeover was not disabled")
 	}
 }

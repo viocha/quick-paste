@@ -75,7 +75,7 @@ func NewClipboardStore() (*ClipboardStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(configDir, "quick-phrase", "clipboard")
+	dir := filepath.Join(configDir, "quick-paste", "clipboard")
 	if err := os.MkdirAll(filepath.Join(dir, "items"), 0o755); err != nil {
 		return nil, err
 	}

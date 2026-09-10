@@ -6,7 +6,7 @@ import {
   SearchIcon, Trash2Icon, XIcon,
 } from "lucide-react"
 import { Events } from "@wailsio/runtime"
-import { BrowserService, ClipboardService, PhraseService, type ClipboardItem, type PhraseNode } from "../bindings/quick-phrase"
+import { BrowserService, ClipboardService, PhraseService, type ClipboardItem, type PhraseNode } from "../bindings/quick-paste"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -215,7 +215,7 @@ export function BrowserApp() {
     draggable:true,
     onDragStart:(event:DragEvent<HTMLButtonElement>)=>{
       event.stopPropagation()
-      event.dataTransfer.setData("application/x-quick-phrase-node",node.id)
+      event.dataTransfer.setData("application/x-quick-paste-node",node.id)
       event.dataTransfer.effectAllowed="move"
       setDraggedId(node.id)
     },
@@ -229,7 +229,7 @@ export function BrowserApp() {
     },
     onDrop:(event:DragEvent<HTMLButtonElement>)=>{
       event.preventDefault();event.stopPropagation()
-      const id=event.dataTransfer.getData("application/x-quick-phrase-node")||draggedId||""
+      const id=event.dataTransfer.getData("application/x-quick-paste-node")||draggedId||""
       setDraggedId(null);setDropTarget(null)
       if(node.type==="folder"&&canMove(nodes,id,node.id))void run(()=>movePhraseNode(id,node.id))
     },
@@ -354,7 +354,7 @@ export function BrowserApp() {
     </div>
     {tab==="clipboard"&&!captureEnabled&&<button className="shrink-0 border-b bg-muted/50 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground" onClick={()=>void run(async()=>{await ClipboardService.SetEnabled(true);setCaptureEnabled(true)})}>剪贴板已关闭，点击开启</button>}
     <ScrollArea key={transientVersion} className="min-h-0 flex-1" viewportClassName="[&>[data-slot=scroll-area-content]]:min-h-full [&>[data-slot=scroll-area-content]]:flex [&>[data-slot=scroll-area-content]]:flex-col" onScrollCapture={()=>{clearDetailTimer();void BrowserService.DismissDetail()}}>
-      {loading?<div className="min-h-full flex-1"/>:tab==="phrase"?<ContextMenu><ContextMenuTrigger className={`flex flex-1 flex-col ${dropTarget===""?"bg-accent/40 ring-2 ring-inset ring-ring":""}`} onDragOver={event=>{if(!draggedId||!canMove(nodes,draggedId,""))return;event.preventDefault();event.dataTransfer.dropEffect="move";setDropTarget("")}} onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setDropTarget(current=>current===""?null:current)}} onDrop={event=>{event.preventDefault();const id=event.dataTransfer.getData("application/x-quick-phrase-node")||draggedId||"";setDraggedId(null);setDropTarget(null);if(canMove(nodes,id,""))void run(()=>movePhraseNode(id,""))}}><ul className="p-0.5">{phraseResults?phraseResults.map(({node,path})=><li key={node.id}>
+      {loading?<div className="min-h-full flex-1"/>:tab==="phrase"?<ContextMenu><ContextMenuTrigger className={`flex flex-1 flex-col ${dropTarget===""?"bg-accent/40 ring-2 ring-inset ring-ring":""}`} onDragOver={event=>{if(!draggedId||!canMove(nodes,draggedId,""))return;event.preventDefault();event.dataTransfer.dropEffect="move";setDropTarget("")}} onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setDropTarget(current=>current===""?null:current)}} onDrop={event=>{event.preventDefault();const id=event.dataTransfer.getData("application/x-quick-paste-node")||draggedId||"";setDraggedId(null);setDropTarget(null);if(canMove(nodes,id,""))void run(()=>movePhraseNode(id,""))}}><ul className="p-0.5">{phraseResults?phraseResults.map(({node,path})=><li key={node.id}>
         <ContextMenu onOpenChange={open=>setContextId(open?node.id:null)}>
           <ContextMenuTrigger className={contextId===node.id?"rounded bg-accent":undefined}>
             <button {...dragProps(node)} data-selectable="true" onClick={()=>void insert(node.id)} className="flex min-h-7 w-full min-w-0 items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-accent focus:bg-accent"><FileTextIcon className="size-3.5 shrink-0 text-muted-foreground"/><span className="min-w-0"><span className="block truncate text-xs leading-3.5">{node.name}</span><span className="block truncate text-[11px] leading-3 text-muted-foreground">{path}{node.content?` · ${node.content.replace(/\s+/g," ")}`:""}</span></span></button>

@@ -1,4 +1,4 @@
-module quick-phrase
+module quick-paste
 
 go 1.25.0
 

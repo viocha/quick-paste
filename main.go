@@ -38,10 +38,10 @@ func main() {
 	var monitor *InputMonitor
 	var manager *application.WebviewWindow
 	app := application.New(application.Options{
-		Name:        "quick-phrase",
-		Description: "快捷短语",
+		Name:        "quick-paste",
+		Description: "快捷粘贴",
 		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID: "com.quickphrase.desktop",
+			UniqueID: "com.quickpaste.desktop",
 			ExitCode: 0,
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
 				if manager != nil && !isAutostart(data.Args) {
@@ -80,7 +80,7 @@ func main() {
 
 	manager = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "manager",
-		Title:            "quick-phrase",
+		Title:            "quick-paste",
 		Width:            1080,
 		Height:           680,
 		MinWidth:         820,
@@ -99,7 +99,7 @@ func main() {
 
 	tray := app.SystemTray.New()
 	tray.SetIcon(appIcon)
-	tray.SetTooltip("quick-phrase")
+	tray.SetTooltip("quick-paste")
 	trayMenu := app.NewMenu()
 	trayMenu.Add("打开窗口").OnClick(func(*application.Context) {
 		manager.Show().Focus()
@@ -116,7 +116,7 @@ func main() {
 	// 候选窗复用 React 主题，从创建起就禁止激活。
 	popup := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "autocomplete",
-		Title:            "quick-phrase Suggestions",
+		Title:            "quick-paste Suggestions",
 		Width:            360,
 		Height:           260,
 		Hidden:           true,
@@ -154,6 +154,8 @@ func main() {
 	browser.monitor = monitor
 	monitor.closeBrowser = browser.Hide
 	monitor.browserMouseDown = browser.mouseDown
+	monitor.takeOverWinV = browser.GetWinVTakeover
+	monitor.openClipboard = func() { browser.toggle("clipboard") }
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		backup.start()
 		if err := monitor.Start(); err != nil {
