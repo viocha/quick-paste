@@ -340,7 +340,7 @@ function ManagerApp() {
           )
         )
       })
-    }, 500)
+    }, 1000)
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current)
     }
