@@ -222,7 +222,7 @@ func (s *ClipboardService) readOpenClipboard() (ClipboardItem, map[uint32][]byte
 	if len(formats) == 0 {
 		return ClipboardItem{}, nil, errors.New("没有支持的剪贴板格式")
 	}
-	text := decodeUTF16Clipboard(formats[cfUnicodeText])
+	text := richPlainText(formats)
 	item := ClipboardItem{Text: text}
 	switch {
 	case len(formats[cfHDrop]) > 0:
@@ -283,6 +283,16 @@ func decodeUTF16Clipboard(data []byte) string {
 		values = append(values, value)
 	}
 	return string(utf16.Decode(values))
+}
+
+func richPlainText(formats map[uint32][]byte) string {
+	if text := decodeUTF16Clipboard(formats[cfUnicodeText]); text != "" {
+		return text
+	}
+	if data := formats[storedHTML]; len(data) > 0 {
+		return decodeHTMLClipboardText(data)
+	}
+	return ""
 }
 
 func decodeHDrop(data []byte) []string {
@@ -555,7 +565,7 @@ func (s *ClipboardService) GetText(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if text := decodeUTF16Clipboard(formats[cfUnicodeText]); text != "" {
+	if text := richPlainText(formats); text != "" {
 		return text, nil
 	}
 	if item.Kind == ClipboardFiles {
@@ -687,8 +697,19 @@ func (s *ClipboardService) prepareItem(id string, plain bool) (map[uint32][]byte
 			}
 		}
 	}
+	text := richPlainText(formats)
+	if text == "" {
+		text = item.Text
+	}
+	if item.Kind == ClipboardRich && text != "" && len(formats[cfUnicodeText]) == 0 {
+		withText := make(map[uint32][]byte, len(formats)+1)
+		for format, data := range formats {
+			withText[format] = data
+		}
+		withText[cfUnicodeText] = encodeUTF16Clipboard(text)
+		formats = withText
+	}
 	if plain {
-		text := decodeUTF16Clipboard(formats[cfUnicodeText])
 		if text == "" {
 			return nil, errors.New("此项目没有纯文本内容")
 		}
