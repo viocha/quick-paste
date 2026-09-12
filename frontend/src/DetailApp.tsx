@@ -20,9 +20,10 @@ export function DetailApp() {
     void BrowserService.GetDetail().then(update).catch(()=>{})
     return ()=>{active=false;cancel();layout()}
   },[])
+  const previewText=detail.image ? "" : detail.content.replace(/[\r\n]+$/,"")
   useLayoutEffect(()=>{
     const element=content
-    if(!element || !detail.content)return
+    if(!element || (!previewText&&!detail.image))return
     element.closest('[data-slot="scroll-area-viewport"]')?.scrollTo(0,0)
     const resize=()=>{
       const popup=element.closest('[data-slot="tooltip-content"]')
@@ -36,18 +37,18 @@ export function DetailApp() {
     }
     const observer=new ResizeObserver(resize);observer.observe(element);resize()
     return ()=>observer.disconnect()
-  },[detail.token,detail.content,content])
+  },[detail.token,detail.image,previewText,content])
   const side=detail.side==="left" ? "left" : "right"
   return <TooltipProvider delay={tooltipDelay} timeout={tooltipTimeout}>
     <div ref={anchor} aria-hidden="true" style={{position:"absolute",top:8,[side==="right" ? "left":"right"]:4,width:0,height:32}} />
-    <Tooltip open={!!detail.content}>
+    <Tooltip open={!!detail.image||!!previewText}>
       <TooltipContent side={side} align="start" sideOffset={2}
         positionerProps={{anchor,collisionAvoidance:{side:"none",align:"none"}}}
         arrowStyle={{top:Math.max(6,(detail.arrowY||16)-8)}}
         className="block w-[calc(100vw-16px)] max-w-none">
-        {detail.scrollable ? <ScrollArea className="w-full" scrollbarClassName="right-[-10px]!" style={{"--detail-insets":`${insets}px`} as CSSProperties} viewportClassName="max-h-[calc(100svh-var(--detail-insets))]">
-          <div ref={setContent}>{detail.image&&<img src={detail.image} alt="剪贴板图片预览" className="mb-2 max-h-72 w-full object-contain"/>}<div className="whitespace-pre-wrap break-words">{detail.content}</div></div>
-        </ScrollArea> : <div ref={setContent}>{detail.image&&<img src={detail.image} alt="剪贴板图片预览" className="mb-2 max-h-72 w-full object-contain"/>}<div className="whitespace-pre-wrap break-words">{detail.content}</div></div>}
+        {detail.scrollable ? <ScrollArea className="w-full" scrollbarClassName="right-[-10px]! z-[60]" style={{"--detail-insets":`${insets}px`} as CSSProperties} viewportClassName="max-h-[calc(100svh-var(--detail-insets))]">
+          <div ref={setContent}>{detail.image&&<img src={detail.image} alt="剪贴板图片预览" className="max-h-96 w-full object-contain"/>}{previewText&&<div className="whitespace-pre-wrap break-words">{previewText}</div>}</div>
+        </ScrollArea> : <div ref={setContent}>{detail.image&&<img src={detail.image} alt="剪贴板图片预览" className="max-h-96 w-full object-contain"/>}{previewText&&<div className="whitespace-pre-wrap break-words">{previewText}</div>}</div>}
       </TooltipContent>
     </Tooltip>
   </TooltipProvider>

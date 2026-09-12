@@ -45,14 +45,18 @@ func placeBrowserDetail(panel, work rect, rowCenter int32, width, height, gap in
 	return rect{x, y, x + w, y + h}
 }
 
-func browserDetailHeight(contentHeight, workHeight int, dpi uintptr) (int, bool) {
+func browserDetailHeightWithLimit(contentHeight, workHeight int, dpi uintptr, maxLogicalHeight int) (int, bool) {
 	if dpi == 0 {
 		dpi = 96
 	}
-	limit := min(320, workHeight*96/int(dpi))
+	limit := min(maxLogicalHeight, workHeight*96/int(dpi))
 	// Rounding allowance must not cause otherwise fitting content to scroll.
 	logicalHeight := max(28, min(contentHeight+2, limit))
 	return min(workHeight, (logicalHeight*int(dpi)+95)/96), contentHeight > limit
+}
+
+func browserDetailHeight(contentHeight, workHeight int, dpi uintptr) (int, bool) {
+	return browserDetailHeightWithLimit(contentHeight, workHeight, dpi, 320)
 }
 
 func (s *BrowserService) GetDetail() BrowserDetail {
@@ -104,7 +108,7 @@ func (s *BrowserService) ShowDetail(id string, top, height int) {
 			s.detailRow = row
 			if item.Kind == ClipboardImage {
 				s.detail.Image, _ = s.clipboard.previewData(id)
-				s.detail.Content = item.Preview
+				s.detail.Content = ""
 			} else if text, err := s.clipboard.GetText(id); err == nil {
 				s.detail.Content = text
 			} else {
@@ -138,8 +142,12 @@ func (s *BrowserService) DetailReady(token, height int) {
 	}
 	// Decide whether content actually exceeds the permitted window height,
 	// independently of the WebView's previous viewport and scrollbar state.
-	physicalHeight, scrollable := browserDetailHeight(height, int(info.Work.Bottom-info.Work.Top), dpi)
-	bounds := placeBrowserDetail(panel, info.Work, (s.detailRow.Top+s.detailRow.Bottom)/2, scaleForDPI(300, dpi), physicalHeight, 0)
+	logicalWidth, maxLogicalHeight := 300, 320
+	if s.detail.Image != "" {
+		logicalWidth, maxLogicalHeight = 520, 460
+	}
+	physicalHeight, scrollable := browserDetailHeightWithLimit(height, int(info.Work.Bottom-info.Work.Top), dpi, maxLogicalHeight)
+	bounds := placeBrowserDetail(panel, info.Work, (s.detailRow.Top+s.detailRow.Bottom)/2, scaleForDPI(logicalWidth, dpi), physicalHeight, 0)
 	side := "right"
 	if bounds.Right <= panel.Left {
 		side = "left"
