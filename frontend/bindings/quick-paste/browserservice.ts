@@ -78,6 +78,15 @@ export function OpenManager(): $CancellablePromise<void> {
 }
 
 /**
+ * Prewarm lets WebView2 create its first visible composition surface while the
+ * native window is positioned off-screen. The real first shortcut opening can
+ * then reuse the already initialised surface without flashing a cold frame.
+ */
+export function Prewarm(): $CancellablePromise<void> {
+    return $Call.ByID(2281481863);
+}
+
+/**
  * ReadyToShow is called after React has committed the loading state. Keeping
  * the native window hidden until then prevents a stale frame or blank WebView
  * surface from flashing on the first opening.

@@ -38,6 +38,22 @@ type ClipboardItem struct {
 	Bytes      int64         `json:"bytes"`
 }
 
+type ClipboardListItem struct {
+	ID        string        `json:"id"`
+	Kind      ClipboardKind `json:"kind"`
+	Preview   string        `json:"preview"`
+	Source    string        `json:"source,omitempty"`
+	CreatedAt time.Time     `json:"createdAt"`
+	Pinned    bool          `json:"pinned,omitempty"`
+	HasText   bool          `json:"hasText,omitempty"`
+}
+
+type ClipboardPage struct {
+	Items []ClipboardListItem `json:"items"`
+	Total int                 `json:"total"`
+	Icons map[string]string   `json:"icons,omitempty"`
+}
+
 type clipboardPayload struct {
 	Formats map[uint32][]byte `json:"formats"`
 }
@@ -226,6 +242,86 @@ func (s *ClipboardStore) List(query string) []ClipboardItem {
 		result = append(result, copyItem)
 	}
 	return result
+}
+
+func clipboardListItem(item ClipboardItem) ClipboardListItem {
+	return ClipboardListItem{
+		ID:        item.ID,
+		Kind:      item.Kind,
+		Preview:   item.Preview,
+		Source:    item.Source,
+		CreatedAt: item.CreatedAt,
+		Pinned:    item.Pinned,
+		HasText:   item.Text != "" || len(item.Files) > 0,
+	}
+}
+
+func clipboardItemMatches(item ClipboardItem, query string) bool {
+	if query == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(item.Preview+"\n"+item.Text+"\n"+strings.Join(item.Files, "\n")+"\n"+item.Source), query)
+}
+
+func (s *ClipboardStore) ListPage(query string, offset, limit int) ClipboardPage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query = strings.ToLower(strings.TrimSpace(query))
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 100
+	} else if limit > 500 {
+		limit = 500
+	}
+
+	page := ClipboardPage{
+		Items: make([]ClipboardListItem, 0, limit),
+		Icons: make(map[string]string),
+	}
+	if query == "" {
+		page.Total = len(s.items)
+		if offset >= len(s.items) {
+			page.Icons = nil
+			return page
+		}
+		end := min(len(s.items), offset+limit)
+		for _, item := range s.items[offset:end] {
+			page.Items = append(page.Items, clipboardListItem(item))
+			if item.Source != "" && item.SourceIcon != "" {
+				if _, exists := page.Icons[item.Source]; !exists {
+					page.Icons[item.Source] = item.SourceIcon
+				}
+			}
+		}
+		if len(page.Icons) == 0 {
+			page.Icons = nil
+		}
+		return page
+	}
+
+	matched := 0
+	for _, item := range s.items {
+		if !clipboardItemMatches(item, query) {
+			continue
+		}
+		if matched >= offset && len(page.Items) < limit {
+			page.Items = append(page.Items, clipboardListItem(item))
+			if item.Source != "" && item.SourceIcon != "" {
+				if _, exists := page.Icons[item.Source]; !exists {
+					page.Icons[item.Source] = item.SourceIcon
+				}
+			}
+		}
+		matched++
+	}
+	page.Total = matched
+	if len(page.Icons) == 0 {
+		page.Icons = nil
+	}
+	return page
 }
 
 func (s *ClipboardStore) Payload(id string) (ClipboardItem, map[uint32][]byte, error) {

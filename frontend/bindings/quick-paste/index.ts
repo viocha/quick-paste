@@ -27,6 +27,8 @@ export type {
     BrowserDetail,
     ClipboardItem,
     ClipboardLimits,
+    ClipboardListItem,
+    ClipboardPage,
     ClipboardStats,
     PhraseNode
 } from "./models.js";

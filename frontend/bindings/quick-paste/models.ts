@@ -87,6 +87,22 @@ export interface ClipboardLimits {
     "imageItemMB": number;
 }
 
+export interface ClipboardListItem {
+    "id": string;
+    "kind": ClipboardKind;
+    "preview": string;
+    "source"?: string;
+    "createdAt": string;
+    "pinned"?: boolean;
+    "hasText"?: boolean;
+}
+
+export interface ClipboardPage {
+    "items": ClipboardListItem[] | null;
+    "total": number;
+    "icons"?: { [_ in string]?: string } | null;
+}
+
 export interface ClipboardStats {
     "items": number;
     "pinned": number;

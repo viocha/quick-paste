@@ -43,6 +43,39 @@ func TestClipboardStoreDeduplicatesAndPreservesPin(t *testing.T) {
 	}
 }
 
+func TestClipboardStoreListPageIsLightweightAndPaged(t *testing.T) {
+	s := testClipboardStore(t)
+	for index, item := range []ClipboardItem{
+		{Kind: ClipboardText, Preview: "one", Text: "body one", Source: "Code", SourceIcon: "data:image/png;base64,icon"},
+		{Kind: ClipboardFiles, Preview: "two", Files: []string{`C:\\two.txt`}, Source: "Code", SourceIcon: "data:image/png;base64,icon"},
+		{Kind: ClipboardImage, Preview: "图片 10 × 10", Source: "Edge", SourceIcon: "data:image/png;base64,edge"},
+	} {
+		if _, err := s.Add(item, map[uint32][]byte{13: {byte(index + 1)}}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	page := s.ListPage("", 0, 2)
+	if page.Total != 3 || len(page.Items) != 2 {
+		t.Fatalf("page = %#v", page)
+	}
+	if page.Items[0].Preview != "图片 10 × 10" || page.Items[1].Preview != "two" {
+		t.Fatalf("wrong page order: %#v", page.Items)
+	}
+	if !page.Items[1].HasText {
+		t.Fatal("file item should expose plain-text capability")
+	}
+	if page.Icons["Edge"] != "data:image/png;base64,edge" || page.Icons["Code"] != "data:image/png;base64,icon" {
+		t.Fatalf("icons = %#v", page.Icons)
+	}
+
+	page = s.ListPage("body one", 0, 100)
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Preview != "one" || !page.Items[0].HasText {
+		t.Fatalf("search page = %#v", page)
+	}
+}
+
 func TestClipboardStoreSortsAndClearsOrdinaryItems(t *testing.T) {
 	s := testClipboardStore(t)
 	a, _ := s.Add(ClipboardItem{Kind: ClipboardText, Preview: "a"}, map[uint32][]byte{13: {1}})

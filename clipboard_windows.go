@@ -597,6 +597,9 @@ func (s *ClipboardService) SetEnabled(enabled bool) error {
 }
 
 func (s *ClipboardService) List(query string) []ClipboardItem { return s.store.List(query) }
+func (s *ClipboardService) ListPage(query string, offset, limit int) ClipboardPage {
+	return s.store.ListPage(query, offset, limit)
+}
 
 func (s *ClipboardService) GetText(id string) (string, error) {
 	item, formats, err := s.store.Payload(id)

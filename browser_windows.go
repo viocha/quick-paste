@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -26,6 +27,7 @@ var (
 	procAttachThreadInputBrowser      = user32.NewProc("AttachThreadInput")
 	procBringWindowToTopBrowser       = user32.NewProc("BringWindowToTop")
 	procGetWindowThreadProcessBrowser = user32.NewProc("GetWindowThreadProcessId")
+	procDwmFlush                      = windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmFlush")
 )
 
 type hotkeySpec struct {
@@ -431,6 +433,36 @@ func (s *BrowserService) ReadyToShow() {
 	})
 	s.showPending = false
 	s.visible = true
+}
+
+// Prewarm lets WebView2 create its first visible composition surface while the
+// native window is positioned off-screen. The real first shortcut opening can
+// then reuse the already initialised surface without flashing a cold frame.
+func (s *BrowserService) Prewarm() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.initialised || s.visible || s.showPending || s.window == nil {
+		return
+	}
+	application.InvokeSync(func() {
+		hwnd := uintptr(s.window.NativeWindow())
+		if hwnd == 0 {
+			return
+		}
+		index := int32(gwlExStyle)
+		style, _, _ := procGetWindowLongW.Call(hwnd, uintptr(uint32(index)))
+		procSetWindowLongW.Call(hwnd, uintptr(uint32(index)), style|wsExNoActivate)
+		// Keep the first native/WebView presentation completely outside the
+		// virtual desktop while preserving the normal window size.
+		offscreen := int32(-32000)
+		procSetWindowPos.Call(hwnd, 0, uintptr(int64(offscreen)), uintptr(int64(offscreen)), 0, 0, swpNoActivate|0x0001|0x0004)
+		s.window.Show()
+		procShowWindow.Call(hwnd, 4) // SW_SHOWNOACTIVATE
+		procDwmFlush.Call()
+		procShowWindow.Call(hwnd, 0) // SW_HIDE
+		procSetWindowLongW.Call(hwnd, uintptr(uint32(index)), style)
+		s.initialised = true
+	})
 }
 
 func (s *BrowserService) hide() {

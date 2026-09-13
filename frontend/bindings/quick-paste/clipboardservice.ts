@@ -45,6 +45,10 @@ export function List(query: string): $CancellablePromise<$models.ClipboardItem[]
     return $Call.ByID(3681129803, query);
 }
 
+export function ListPage(query: string, offset: number, limit: number): $CancellablePromise<$models.ClipboardPage> {
+    return $Call.ByID(2606071904, query, offset, limit);
+}
+
 export function Paste(id: string, plain: boolean): $CancellablePromise<void> {
     return $Call.ByID(2736499246, id, plain);
 }
