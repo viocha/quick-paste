@@ -23,6 +23,29 @@ import { PhraseDestinationTree } from "./PhraseDestinationTree"
 type Tab = "clipboard" | "phrase"
 type Editor = { kind: "folder" | "phrase"; id?: string; parentId: string; name: string; content: string }
 
+const clipboardVirtualBatch = 100
+const clipboardVirtualStep = 50
+const clipboardRowGap = 6
+const clipboardListPadding = 6
+
+function clipboardRowHeight(item: ClipboardItem) {
+  return item.kind === "image" ? 128 : 64
+}
+
+function clipboardWindowStartForScroll(items: ClipboardItem[], offsets: number[], scrollTop: number) {
+  if(items.length<=clipboardVirtualBatch)return 0
+  let low=0
+  let high=items.length
+  while(low<high){
+    const middle=(low+high)>>1
+    const bottom=offsets[middle]+clipboardRowHeight(items[middle])
+    if(bottom<scrollTop)low=middle+1
+    else high=middle
+  }
+  const maxStart=Math.max(0,items.length-clipboardVirtualBatch)
+  return Math.min(Math.floor(low/clipboardVirtualStep)*clipboardVirtualStep,maxStart)
+}
+
 function relativeTime(value: string) {
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000))
   if (seconds < 60) return "刚刚"
@@ -86,8 +109,10 @@ export function BrowserApp() {
   const clearDetailTimer=()=>{if(detailTimer.current!==null){clearTimeout(detailTimer.current);detailTimer.current=null}}
   const [copiedId,setCopiedId]=useState<string|null>(null)
   const [undoVisible,setUndoVisible]=useState(false)
+  const [clipboardWindowStart,setClipboardWindowStart]=useState(0)
   const copiedTimer=useRef<number|undefined>(undefined)
   const searchRef=useRef<HTMLInputElement>(null)
+  const scrollAreaRef=useRef<HTMLDivElement>(null)
   const clipboardQueryRef=useRef("")
   const clipboardSearchVersion=useRef(0)
   clipboardQueryRef.current=queries.clipboard
@@ -134,6 +159,9 @@ export function BrowserApp() {
   },[])
   useEffect(()=>{
     if(tab!=="clipboard")return
+    setClipboardWindowStart(0)
+    const viewport=scrollAreaRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    if(viewport)viewport.scrollTop=0
     const version=++clipboardSearchVersion.current
     const timer=setTimeout(()=>void ClipboardService.List(queries.clipboard).then(value=>{if(version===clipboardSearchVersion.current)setItems(value??[])}).catch(e=>setError(String(e))),120)
     return ()=>clearTimeout(timer)
@@ -210,6 +238,21 @@ export function BrowserApp() {
       return rank(a.node.name.toLocaleLowerCase())-rank(b.node.name.toLocaleLowerCase())||a.node.order-b.node.order
     })
   },[nodes,queries.phrase])
+
+  const clipboardVirtual=useMemo(()=>{
+    const offsets=new Array<number>(items.length)
+    let totalHeight=clipboardListPadding
+    for(let index=0;index<items.length;index++){
+      offsets[index]=totalHeight
+      totalHeight+=clipboardRowHeight(items[index])
+      if(index<items.length-1)totalHeight+=clipboardRowGap
+    }
+    totalHeight+=clipboardListPadding
+    const maxStart=Math.max(0,items.length-clipboardVirtualBatch)
+    const start=Math.min(clipboardWindowStart,maxStart)
+    const end=Math.min(items.length,start+clipboardVirtualBatch)
+    return {offsets,totalHeight,start,end,visible:items.slice(start,end)}
+  },[items,clipboardWindowStart])
 
   const dragProps=(node:PhraseNode)=>({
     draggable:true,
@@ -353,7 +396,7 @@ export function BrowserApp() {
       <SearchIcon className="size-3.5 text-muted-foreground"/><Input ref={searchRef} className="h-6 border-0 px-1 text-xs shadow-none focus-visible:ring-0" placeholder={tab==="clipboard"?"搜索剪贴板":"搜索名称、内容或路径"} value={queries[tab]} onChange={e=>setQueries({...queries,[tab]:e.target.value})}/>
     </div>
     {tab==="clipboard"&&!captureEnabled&&<button className="shrink-0 border-b bg-muted/50 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground" onClick={()=>void run(async()=>{await ClipboardService.SetEnabled(true);setCaptureEnabled(true)})}>剪贴板已关闭，点击开启</button>}
-    <ScrollArea key={transientVersion} className="min-h-0 flex-1" viewportClassName="[&>[data-slot=scroll-area-content]]:min-h-full [&>[data-slot=scroll-area-content]]:flex [&>[data-slot=scroll-area-content]]:flex-col" onScrollCapture={()=>{clearDetailTimer();void BrowserService.DismissDetail()}}>
+    <ScrollArea ref={scrollAreaRef} key={transientVersion} className="min-h-0 flex-1" viewportClassName="[&>[data-slot=scroll-area-content]]:min-h-full [&>[data-slot=scroll-area-content]]:flex [&>[data-slot=scroll-area-content]]:flex-col" onScrollCapture={event=>{clearDetailTimer();void BrowserService.DismissDetail();if(tab==="clipboard"&&(event.target as HTMLElement).dataset.slot==="scroll-area-viewport"){const next=clipboardWindowStartForScroll(items,clipboardVirtual.offsets,(event.target as HTMLElement).scrollTop);setClipboardWindowStart(current=>current===next?current:next)}}}>
       {loading?<div className="min-h-full flex-1"/>:tab==="phrase"?<ContextMenu><ContextMenuTrigger className={`flex flex-1 flex-col ${dropTarget===""?"bg-accent/40 ring-2 ring-inset ring-ring":""}`} onDragOver={event=>{if(!draggedId||!canMove(nodes,draggedId,""))return;event.preventDefault();event.dataTransfer.dropEffect="move";setDropTarget("")}} onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setDropTarget(current=>current===""?null:current)}} onDrop={event=>{event.preventDefault();const id=event.dataTransfer.getData("application/x-quick-paste-node")||draggedId||"";setDraggedId(null);setDropTarget(null);if(canMove(nodes,id,""))void run(()=>movePhraseNode(id,""))}}><ul className="p-0.5">{phraseResults?phraseResults.map(({node,path})=><li key={node.id}>
         <ContextMenu onOpenChange={open=>setContextId(open?node.id:null)}>
           <ContextMenuTrigger className={contextId===node.id?"rounded bg-accent":undefined}>
@@ -362,9 +405,9 @@ export function BrowserApp() {
           {phraseContext(node)}
         </ContextMenu>
       </li>):tree()}{(phraseResults?.length===0||(!phraseResults&&nodes.length===0))&&<p className="p-5 text-center text-xs text-muted-foreground">{queries.phrase?"没有匹配的短语":"暂无短语"}</p>}</ul></ContextMenuTrigger><ContextMenuContent finalFocus={false}><ContextMenuGroup><ContextMenuItem onClick={()=>openEditor(undefined,"","phrase")}><PlusIcon/>新建短语</ContextMenuItem><ContextMenuItem onClick={()=>openEditor(undefined,"","folder")}><FolderPlusIcon/>新建文件夹</ContextMenuItem></ContextMenuGroup></ContextMenuContent></ContextMenu>:
-      <div role="listbox" className="flex flex-col gap-1.5 p-1.5">{items.map(item=><ContextMenu key={item.id} onOpenChange={open=>setContextId(open?item.id:null)}>
-        <ContextMenuTrigger>
-          <div className={`group relative rounded-md border hover:border-border has-[:focus-visible]:bg-accent ${contextId===item.id?"border-border bg-accent":"bg-background/40 hover:bg-accent"} ${item.kind==="image"?"h-32":"h-16"}`} onPointerEnter={event=>{clearDetailTimer();const element=event.currentTarget;const summary=element.querySelector<HTMLElement>("[data-clipboard-summary]");const truncated=!!summary&&(summary.scrollHeight>summary.clientHeight||summary.scrollWidth>summary.clientWidth);if(item.kind!=="image"&&!truncated)return;detailTimer.current=setTimeout(()=>{detailTimer.current=null;if(element.isConnected&&element.matches(":hover")){const bounds=element.getBoundingClientRect();void BrowserService.ShowDetail(item.id,Math.round(bounds.top),Math.round(bounds.height))}},tooltipDelay)}} onPointerLeave={()=>{clearDetailTimer();void BrowserService.HideDetail(item.id)}} onPointerDown={()=>{clearDetailTimer();void BrowserService.DismissDetail()}}>
+      <div role="listbox" className="relative min-h-full" style={{height:items.length?clipboardVirtual.totalHeight:undefined}}>{clipboardVirtual.visible.map((item,virtualIndex)=>{const index=clipboardVirtual.start+virtualIndex;return <div key={item.id} className="absolute inset-x-1.5" style={{top:clipboardVirtual.offsets[index],height:clipboardRowHeight(item)}}><ContextMenu onOpenChange={open=>setContextId(open?item.id:null)}>
+        <ContextMenuTrigger className="block h-full">
+          <div className={`group relative h-full rounded-md border hover:border-border has-[:focus-visible]:bg-accent ${contextId===item.id?"border-border bg-accent":"bg-background/40 hover:bg-accent"}`} onPointerEnter={event=>{clearDetailTimer();const element=event.currentTarget;const summary=element.querySelector<HTMLElement>("[data-clipboard-summary]");const truncated=!!summary&&(summary.scrollHeight>summary.clientHeight||summary.scrollWidth>summary.clientWidth);if(item.kind!=="image"&&!truncated)return;detailTimer.current=setTimeout(()=>{detailTimer.current=null;if(element.isConnected&&element.matches(":hover")){const bounds=element.getBoundingClientRect();void BrowserService.ShowDetail(item.id,Math.round(bounds.top),Math.round(bounds.height))}},tooltipDelay)}} onPointerLeave={()=>{clearDetailTimer();void BrowserService.HideDetail(item.id)}} onPointerDown={()=>{clearDetailTimer();void BrowserService.DismissDetail()}}>
             <button data-selectable="true" data-clipboard-id={item.id} data-plain={item.text?"true":"false"} onClick={()=>void paste(item.id)} onAuxClick={e=>{if(e.button===1&&item.text){e.preventDefault();void paste(item.id,true)}}} className="grid h-full w-full grid-rows-[16px_minmax(0,1fr)] gap-1 px-2 py-1 text-left focus-visible:bg-accent">
               <span className="flex min-w-0 items-center gap-1 overflow-hidden pr-20 text-[10px] leading-4 text-muted-foreground">{item.sourceIcon?<img src={item.sourceIcon} alt="" className="size-3 shrink-0 rounded-sm"/>:item.kind==="image"?<ImageIcon className="size-3 shrink-0"/>:item.kind==="files"?<FileIcon className="size-3 shrink-0"/>:item.kind==="rich"?<FileTextIcon className="size-3 shrink-0"/>:<ClipboardIcon className="size-3 shrink-0"/>}<span className="max-w-25 truncate">{item.source||"未知来源"}</span><span>·</span><time className="shrink-0">{relativeTime(item.createdAt)}</time>{item.kind==="rich"&&<><span>·</span><span className="shrink-0">富文本</span></>}{item.kind==="files"&&<><span>·</span><span className="shrink-0">文件</span></>}{item.kind==="image"&&item.preview!=="图片"&&<><span>·</span><span className="shrink-0">{item.preview.replace(/^图片\s*/,"")}</span></>}{item.pinned&&<PinIcon className="size-2.5 shrink-0"/>}</span>
               <span data-clipboard-summary className="line-clamp-2 min-h-0 overflow-hidden break-all text-xs leading-4">{item.kind==="image"?<ClipboardThumbnail id={item.id}/>:item.preview}</span>
@@ -377,7 +420,7 @@ export function BrowserApp() {
           </div>
         </ContextMenuTrigger>
         {clipboardContext(item)}
-      </ContextMenu>)}{items.length===0&&<p className="p-5 text-center text-xs text-muted-foreground">{queries.clipboard?"没有匹配项":captureEnabled?"尚无剪贴板历史":"剪贴板记录已暂停"}</p>}</div>}
+      </ContextMenu></div>})}{items.length===0&&<p className="p-5 text-center text-xs text-muted-foreground">{queries.clipboard?"没有匹配项":captureEnabled?"尚无剪贴板历史":"剪贴板记录已暂停"}</p>}</div>}
     </ScrollArea>
     {undoVisible&&<div className="flex shrink-0 items-center justify-between border-t bg-muted px-3 py-1.5 text-xs"><span>已删除剪贴板项目</span><button className="font-medium text-primary hover:underline" onClick={()=>void run(async()=>{await ClipboardService.UndoDelete();setUndoVisible(false);await reloadClipboard()})}>撤销</button></div>}
     {error&&<p role="alert" className="shrink-0 border-t px-2 py-1.5 text-xs text-destructive">{error}</p>}
