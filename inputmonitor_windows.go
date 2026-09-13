@@ -364,8 +364,14 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 	}
 
 	if vk == vkV {
+		winHeld := keyPressed(vkLWin) || keyPressed(vkRWin)
 		s.mu.Lock()
 		winVDown := s.winVDown
+		// 如果上一次 Win+V 没有收到完整的释放事件，不要让脏状态吞掉后续普通 Ctrl+V。
+		if isDown && winVDown && !winHeld {
+			s.winVDown = false
+			winVDown = false
+		}
 		if isUp && winVDown {
 			s.winVDown = false
 		}
@@ -377,7 +383,7 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 			return true
 		}
 		if isDown && s.monitor.takeOverWinV != nil && s.monitor.takeOverWinV() &&
-			(keyPressed(vkLWin) || keyPressed(vkRWin)) &&
+			winHeld &&
 			!keyPressed(vkCtrl) && !keyPressed(vkMenu) && !keyPressed(vkShift) {
 			s.mu.Lock()
 			s.winVDown = true

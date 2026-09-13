@@ -85,9 +85,11 @@ type ClipboardService struct {
 	store          *ClipboardStore
 	browser        *BrowserService
 	mu             sync.Mutex
+	clipboardMu    sync.Mutex
 	enabled        bool
-	stop           chan struct{}
 	done           chan struct{}
+	listenerThread uint32
+	listenerWindow uintptr
 	lastSeq        uint32
 	suppressSeq    uint32
 	htmlFormat     uint32
@@ -109,7 +111,7 @@ func registerClipboardFormat(name string) uint32 {
 
 func (s *ClipboardService) start() {
 	s.mu.Lock()
-	if s.stop != nil {
+	if s.done != nil {
 		s.mu.Unlock()
 		return
 	}
@@ -118,35 +120,46 @@ func (s *ClipboardService) start() {
 	s.enabled = s.readEnabled()
 	_ = s.store.SetLimits(s.readLimits())
 	s.lastSeq = clipboardSequence()
-	s.stop, s.done = make(chan struct{}), make(chan struct{})
-	stop, done := s.stop, s.done
+	done := make(chan struct{})
+	s.done = done
 	s.mu.Unlock()
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				s.poll()
-			}
+
+	ready := make(chan error, 1)
+	go s.runClipboardListener(done, ready)
+	if err := <-ready; err != nil {
+		log.Printf("启动剪贴板监听失败: %v", err)
+		<-done
+		s.mu.Lock()
+		if s.done == done {
+			s.done = nil
+			s.listenerThread = 0
+			s.listenerWindow = 0
 		}
-	}()
+		s.mu.Unlock()
+	}
 }
 
 func (s *ClipboardService) stopService() {
 	s.mu.Lock()
-	if s.stop == nil {
+	if s.done == nil {
 		s.mu.Unlock()
 		return
 	}
-	close(s.stop)
 	done := s.done
-	s.stop = nil
+	threadID, hwnd := s.listenerThread, s.listenerWindow
 	s.mu.Unlock()
+	if !postClipboardListenerStop(threadID, hwnd) {
+		log.Printf("停止剪贴板监听失败: 无法唤醒监听线程")
+		return
+	}
 	<-done
+	s.mu.Lock()
+	if s.done == done {
+		s.done = nil
+		s.listenerThread = 0
+		s.listenerWindow = 0
+	}
+	s.mu.Unlock()
 }
 
 func clipboardSequence() uint32 {
@@ -154,15 +167,17 @@ func clipboardSequence() uint32 {
 	return uint32(value)
 }
 
-func (s *ClipboardService) poll() {
+func (s *ClipboardService) handleClipboardUpdate() {
 	seq := clipboardSequence()
 	s.mu.Lock()
 	if seq == 0 || seq == s.lastSeq {
 		s.mu.Unlock()
 		return
 	}
-	s.lastSeq = seq
 	enabled, suppressed := s.enabled, seq == s.suppressSeq
+	if !enabled || suppressed {
+		s.lastSeq = seq
+	}
 	s.mu.Unlock()
 	if !enabled || suppressed {
 		return
@@ -170,11 +185,15 @@ func (s *ClipboardService) poll() {
 	source, executable := clipboardOwnerInfo()
 	item, formats, err := s.capture(source, executable)
 	if err != nil {
+		log.Printf("读取剪贴板失败: %v", err)
 		return
 	}
 	if clipboardSequence() != seq {
 		return
 	}
+	s.mu.Lock()
+	s.lastSeq = seq
+	s.mu.Unlock()
 	if _, err := s.store.Add(item, formats); err != nil {
 		log.Printf("保存剪贴板历史失败: %v", err)
 		return
@@ -185,24 +204,36 @@ func (s *ClipboardService) poll() {
 }
 
 func (s *ClipboardService) capture(source, executable string) (ClipboardItem, map[uint32][]byte, error) {
+	s.clipboardMu.Lock()
+	formats, err := s.captureFormats()
+	s.clipboardMu.Unlock()
+	if err != nil {
+		return ClipboardItem{}, nil, err
+	}
+	item, err := clipboardItemFromFormats(formats)
+	if err != nil {
+		return ClipboardItem{}, nil, err
+	}
+	item.Source, item.SourceIcon = source, s.applicationIcon(executable)
+	return item, formats, nil
+}
+
+func (s *ClipboardService) captureFormats() (map[uint32][]byte, error) {
 	var last error
 	for i := 0; i < 5; i++ {
 		if ok, _, err := procOpenClipboard.Call(0); ok != 0 {
-			item, formats, readErr := s.readOpenClipboard()
+			formats, readErr := s.readOpenClipboardFormats()
 			procCloseClipboard.Call()
-			if readErr == nil {
-				item.Source, item.SourceIcon = source, s.applicationIcon(executable)
-			}
-			return item, formats, readErr
+			return formats, readErr
 		} else {
 			last = err
 		}
 		time.Sleep(time.Duration(i+1) * 15 * time.Millisecond)
 	}
-	return ClipboardItem{}, nil, last
+	return nil, last
 }
 
-func (s *ClipboardService) readOpenClipboard() (ClipboardItem, map[uint32][]byte, error) {
+func (s *ClipboardService) readOpenClipboardFormats() (map[uint32][]byte, error) {
 	formats := make(map[uint32][]byte)
 	imageFormat := uint32(0)
 	if clipboardFormatAvailable(cfDIBV5) {
@@ -220,7 +251,14 @@ func (s *ClipboardService) readOpenClipboard() (ClipboardItem, map[uint32][]byte
 		}
 	}
 	if len(formats) == 0 {
-		return ClipboardItem{}, nil, errors.New("没有支持的剪贴板格式")
+		return nil, errors.New("没有支持的剪贴板格式")
+	}
+	return formats, nil
+}
+
+func clipboardItemFromFormats(formats map[uint32][]byte) (ClipboardItem, error) {
+	if len(formats) == 0 {
+		return ClipboardItem{}, errors.New("没有支持的剪贴板格式")
 	}
 	text := richPlainText(formats)
 	item := ClipboardItem{Text: text}
@@ -243,7 +281,7 @@ func (s *ClipboardService) readOpenClipboard() (ClipboardItem, map[uint32][]byte
 		item.Kind = ClipboardText
 		item.Preview = compactPreview(text, "文本")
 	}
-	return item, formats, nil
+	return item, nil
 }
 
 func clipboardFormatAvailable(format uint32) bool {
@@ -740,6 +778,20 @@ func encodeUTF16Clipboard(text string) []byte {
 }
 
 func (s *ClipboardService) write(formats map[uint32][]byte) error {
+	prepared, err := s.prepareClipboardFormats(formats)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for _, item := range prepared {
+			if item.handle != 0 {
+				procGlobalFree.Call(item.handle)
+			}
+		}
+	}()
+
+	s.clipboardMu.Lock()
+	defer s.clipboardMu.Unlock()
 	var openErr error
 	opened := false
 	for i := 0; i < 5; i++ {
@@ -758,34 +810,14 @@ func (s *ClipboardService) write(formats map[uint32][]byte) error {
 		procCloseClipboard.Call()
 		return err
 	}
-	for format, data := range formats {
-		if format == storedHTML {
-			format = s.htmlFormat
-		}
-		if format == storedRTF {
-			format = s.rtfFormat
-		}
-		if format == 0 {
-			continue
-		}
-		handle, _, err := procGlobalAlloc.Call(gmemMoveable, uintptr(len(data)))
-		if handle == 0 {
+	for i := range prepared {
+		item := &prepared[i]
+		if result, _, err := procSetClipboardData.Call(uintptr(item.format), item.handle); result == 0 {
 			procCloseClipboard.Call()
 			return err
 		}
-		ptr, _, err := procGlobalLock.Call(handle)
-		if ptr == 0 {
-			procGlobalFree.Call(handle)
-			procCloseClipboard.Call()
-			return err
-		}
-		copy(unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(data)), data)
-		procGlobalUnlock.Call(handle)
-		if result, _, err := procSetClipboardData.Call(uintptr(format), handle); result == 0 {
-			procGlobalFree.Call(handle)
-			procCloseClipboard.Call()
-			return err
-		}
+		// SetClipboardData 成功后句柄所有权移交给系统。
+		item.handle = 0
 	}
 	procCloseClipboard.Call()
 	s.mu.Lock()
@@ -793,4 +825,50 @@ func (s *ClipboardService) write(formats map[uint32][]byte) error {
 	s.lastSeq = s.suppressSeq
 	s.mu.Unlock()
 	return nil
+}
+
+type preparedClipboardFormat struct {
+	format uint32
+	handle uintptr
+}
+
+func (s *ClipboardService) prepareClipboardFormats(formats map[uint32][]byte) ([]preparedClipboardFormat, error) {
+	prepared := make([]preparedClipboardFormat, 0, len(formats))
+	for format, data := range formats {
+		if format == storedHTML {
+			format = s.htmlFormat
+		}
+		if format == storedRTF {
+			format = s.rtfFormat
+		}
+		if format == 0 || len(data) == 0 {
+			continue
+		}
+		handle, _, err := procGlobalAlloc.Call(gmemMoveable, uintptr(len(data)))
+		if handle == 0 {
+			freePreparedClipboardFormats(prepared)
+			return nil, err
+		}
+		ptr, _, err := procGlobalLock.Call(handle)
+		if ptr == 0 {
+			procGlobalFree.Call(handle)
+			freePreparedClipboardFormats(prepared)
+			return nil, err
+		}
+		copy(unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(data)), data)
+		procGlobalUnlock.Call(handle)
+		prepared = append(prepared, preparedClipboardFormat{format: format, handle: handle})
+	}
+	if len(prepared) == 0 {
+		return nil, errors.New("没有可写入的剪贴板格式")
+	}
+	return prepared, nil
+}
+
+func freePreparedClipboardFormats(prepared []preparedClipboardFormat) {
+	for _, item := range prepared {
+		if item.handle != 0 {
+			procGlobalFree.Call(item.handle)
+		}
+	}
 }

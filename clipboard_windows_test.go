@@ -44,6 +44,44 @@ func TestPrepareRichHTMLAddsPlainTextFallback(t *testing.T) {
 	}
 }
 
+func TestClipboardItemFromFormats(t *testing.T) {
+	text := encodeUTF16Clipboard("hello\nworld")
+	item, err := clipboardItemFromFormats(map[uint32][]byte{cfUnicodeText: text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Kind != ClipboardText || item.Text != "hello\nworld" || item.Preview != "hello world" {
+		t.Fatalf("text item = %#v", item)
+	}
+
+	html := []byte("Version:0.9\r\n<!--StartFragment--><b>rich</b><!--EndFragment-->\x00")
+	item, err = clipboardItemFromFormats(map[uint32][]byte{storedHTML: html})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Kind != ClipboardRich || item.Text != "rich" || item.Preview != "rich" {
+		t.Fatalf("rich item = %#v", item)
+	}
+}
+
+func TestClipboardListenerStartsAndStops(t *testing.T) {
+	service := NewClipboardService(nil, testClipboardStore(t), nil)
+	service.start()
+	service.mu.Lock()
+	started := service.done != nil && service.listenerThread != 0 && service.listenerWindow != 0
+	service.mu.Unlock()
+	if !started {
+		t.Fatal("clipboard listener did not start")
+	}
+	service.stopService()
+	service.mu.Lock()
+	stopped := service.done == nil && service.listenerThread == 0 && service.listenerWindow == 0
+	service.mu.Unlock()
+	if !stopped {
+		t.Fatal("clipboard listener did not stop cleanly")
+	}
+}
+
 func TestDecodeHDrop(t *testing.T) {
 	data := make([]byte, 20)
 	binary.LittleEndian.PutUint32(data[:4], 20)
