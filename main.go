@@ -44,7 +44,7 @@ func main() {
 			UniqueID: "com.quickpaste.desktop",
 			ExitCode: 0,
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
-				if manager != nil && !isAutostart(data.Args) {
+				if manager != nil && !isHiddenStart(data.Args) {
 					manager.Show().Focus()
 				}
 			},
@@ -85,7 +85,7 @@ func main() {
 		Height:           680,
 		MinWidth:         820,
 		MinHeight:        520,
-		Hidden:           isAutostart(os.Args[1:]),
+		Hidden:           isHiddenStart(os.Args[1:]),
 		BackgroundColour: application.NewRGB(255, 255, 255),
 		URL:              "/",
 	})

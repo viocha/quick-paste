@@ -3,19 +3,18 @@
 package main
 
 import (
+	"encoding/xml"
 	"fmt"
-	"golang.org/x/sys/windows/registry"
-	"os"
 	"testing"
 	"time"
+
+	"github.com/go-ole/go-ole"
+	"golang.org/x/sys/windows/registry"
 )
 
-func TestStartupMode(t *testing.T) {
-	if isAutostart([]string{"app.exe"}) || !isAutostart([]string{"app.exe", "--autostart"}) {
-		t.Fatal("incorrect startup mode")
-	}
-	if got := startupCommand(`C:\Program Files\quick-paste.exe`); got != `"C:\Program Files\quick-paste.exe" --autostart` {
-		t.Fatalf("command: %q", got)
+func TestHiddenStartMode(t *testing.T) {
+	if isHiddenStart([]string{"app.exe"}) || !isHiddenStart([]string{"app.exe", "--hidden"}) {
+		t.Fatal("incorrect hidden start mode")
 	}
 }
 
@@ -65,40 +64,63 @@ func TestTooltipTimeoutPersistsAndValidates(t *testing.T) {
 		}
 	}
 }
-func TestAutostartSettingsRoundTrip(t *testing.T) {
-	// Exercise registry writes in an isolated key, never enable real login startup.
-	path := fmt.Sprintf(`Software\quick-paste-test-%d`, time.Now().UnixNano())
-	defer registry.DeleteKey(registry.CURRENT_USER, path)
-	s := &SettingsService{registryPath: path}
-	if enabled, err := s.GetAutostart(); err != nil || enabled {
-		t.Fatalf("initial: %v %v", enabled, err)
-	}
-	if err := s.SetAutostart(true); err != nil {
-		t.Fatal(err)
-	}
-	if enabled, err := s.GetAutostart(); err != nil || !enabled {
-		t.Fatalf("enabled: %v %v", enabled, err)
-	}
-	key, err := registry.OpenKey(registry.CURRENT_USER, path, registry.QUERY_VALUE)
+func TestMissingAutostartTaskIsDisabled(t *testing.T) {
+	_, err := withTaskSchedulerRoot(func(root *ole.IDispatch) (struct{}, error) {
+		enabled, lookupErr := scheduledTaskEnabled(root, fmt.Sprintf("quick-paste-missing-%d", time.Now().UnixNano()))
+		if lookupErr != nil {
+			return struct{}{}, lookupErr
+		}
+		if enabled {
+			t.Fatal("missing task reported as enabled")
+		}
+		return struct{}{}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	command, _, err := key.GetStringValue(startupValueName)
-	key.Close()
-	if err != nil {
+}
+
+func TestAutostartTaskXML(t *testing.T) {
+	const executable = `C:\Program Files\quick-paste & tools\quick-paste.exe`
+	const username = `DOMAIN\user&name`
+
+	var task struct {
+		Triggers struct {
+			Logon struct {
+				Enabled bool   `xml:"Enabled"`
+				UserID  string `xml:"UserId"`
+			} `xml:"LogonTrigger"`
+		} `xml:"Triggers"`
+		Principals struct {
+			Principal struct {
+				UserID    string `xml:"UserId"`
+				LogonType string `xml:"LogonType"`
+				RunLevel  string `xml:"RunLevel"`
+			} `xml:"Principal"`
+		} `xml:"Principals"`
+		Settings struct {
+			ExecutionTimeLimit string `xml:"ExecutionTimeLimit"`
+		} `xml:"Settings"`
+		Actions struct {
+			Exec struct {
+				Command   string `xml:"Command"`
+				Arguments string `xml:"Arguments"`
+			} `xml:"Exec"`
+		} `xml:"Actions"`
+	}
+	if err := xml.Unmarshal([]byte(autostartTaskXML(executable, username)), &task); err != nil {
 		t.Fatal(err)
 	}
-	exe, _ := os.Executable()
-	if command != startupCommand(exe) {
-		t.Fatalf("command: %q", command)
+	if !task.Triggers.Logon.Enabled || task.Triggers.Logon.UserID != username {
+		t.Fatalf("logon trigger: %+v", task.Triggers.Logon)
 	}
-	if err := s.SetAutostart(false); err != nil {
-		t.Fatal(err)
+	if task.Principals.Principal.UserID != username || task.Principals.Principal.LogonType != "InteractiveToken" || task.Principals.Principal.RunLevel != "HighestAvailable" {
+		t.Fatalf("principal: %+v", task.Principals.Principal)
 	}
-	if enabled, err := s.GetAutostart(); err != nil || enabled {
-		t.Fatalf("disabled: %v %v", enabled, err)
+	if task.Settings.ExecutionTimeLimit != "PT0S" {
+		t.Fatalf("execution time limit: %q", task.Settings.ExecutionTimeLimit)
 	}
-	if err := s.SetAutostart(false); err != nil {
-		t.Fatal(err)
+	if task.Actions.Exec.Command != executable || task.Actions.Exec.Arguments != "--hidden" {
+		t.Fatalf("action: %+v", task.Actions.Exec)
 	}
 }
