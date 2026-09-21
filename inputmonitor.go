@@ -5,9 +5,11 @@ import "sync/atomic"
 
 type InputMonitor struct {
 	app              *application.App
-	manager          *application.WebviewWindow
-	popup            *application.WebviewWindow
 	store            *PhraseStore
+	managerWindow    func() *application.WebviewWindow
+	ensurePopup      func() *application.WebviewWindow
+	popupWindow      func() *application.WebviewWindow
+	releasePopup     func()
 	stopFn           func()
 	resetFn          func()
 	browserOpen      atomic.Bool
@@ -17,8 +19,8 @@ type InputMonitor struct {
 	openClipboard    func()
 }
 
-func NewInputMonitor(app *application.App, manager, popup *application.WebviewWindow, store *PhraseStore) *InputMonitor {
-	return &InputMonitor{app: app, manager: manager, popup: popup, store: store}
+func NewInputMonitor(app *application.App, store *PhraseStore) *InputMonitor {
+	return &InputMonitor{app: app, store: store}
 }
 
 func (m *InputMonitor) Start() error {

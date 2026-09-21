@@ -64,6 +64,38 @@ func TestTooltipTimeoutPersistsAndValidates(t *testing.T) {
 		}
 	}
 }
+
+func TestWebViewIdleMinutesPersistsAndValidates(t *testing.T) {
+	path := fmt.Sprintf(`Software\quick-paste-webview-idle-test-%d`, time.Now().UnixNano())
+	defer registry.DeleteKey(registry.CURRENT_USER, path)
+	s := &SettingsService{registryPath: path}
+	if value, err := s.GetWebViewIdleMinutes(); err != nil || value != defaultWebViewIdleMinutes {
+		t.Fatalf("default: %d %v", value, err)
+	}
+	for _, minutes := range []int{1, 5, 30, maxWebViewIdleMinutes} {
+		if err := s.SetWebViewIdleMinutes(minutes); err != nil {
+			t.Fatal(err)
+		}
+		if value, err := (&SettingsService{registryPath: path}).GetWebViewIdleMinutes(); err != nil || value != minutes {
+			t.Fatalf("persisted %d: %d %v", minutes, value, err)
+		}
+	}
+	for _, minutes := range []int{0, maxWebViewIdleMinutes + 1} {
+		if err := s.SetWebViewIdleMinutes(minutes); err == nil {
+			t.Fatalf("accepted %d", minutes)
+		}
+	}
+
+	changed := 0
+	s.onWebViewIdleMinutesChanged = func(minutes int) { changed = minutes }
+	if err := s.SetWebViewIdleMinutes(12); err != nil {
+		t.Fatal(err)
+	}
+	if changed != 12 {
+		t.Fatalf("runtime callback: %d", changed)
+	}
+}
+
 func TestMissingAutostartTaskIsDisabled(t *testing.T) {
 	_, err := withTaskSchedulerRoot(func(root *ole.IDispatch) (struct{}, error) {
 		enabled, lookupErr := scheduledTaskEnabled(root, fmt.Sprintf("quick-paste-missing-%d", time.Now().UnixNano()))

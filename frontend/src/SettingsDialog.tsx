@@ -9,6 +9,7 @@ import { BackupDiffDialog } from "./BackupDiffDialog"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
 const defaults: BackupConfig = { server: "", username: "", automatic: false, intervalHours: 6 }
@@ -34,6 +35,8 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
  const [tab,setTab]=useState("general")
  const [loading,setLoading]=useState(true)
  const [autostart,setAutostart]=useState(false)
+ const [webViewIdleMinutes,setWebViewIdleMinutes]=useState(5)
+ const [webViewIdleDraft,setWebViewIdleDraft]=useState("5")
  const [hotkey,setHotkey]=useState("")
  const [savedHotkey,setSavedHotkey]=useState("")
  const [hotkeyError,setHotkeyError]=useState("")
@@ -63,9 +66,9 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
   if(!open)return
   let active=true
   setLoading(true);setPreview(null);setDiffOpen(false);setConfirmRestore(false);setTab("general")
-  const generalRequest=Promise.all([SettingsService.GetAutostart(),BackupService.GetState(),BackupService.GetPassword()]).then(([enabled,value,currentPassword])=>{
+  const generalRequest=Promise.all([SettingsService.GetAutostart(),SettingsService.GetWebViewIdleMinutes(),BackupService.GetState(),BackupService.GetPassword()]).then(([enabled,idleMinutes,value,currentPassword])=>{
    if(!active)return
-   setAutostart(enabled);setState(value);setConfig({server:value.server,username:value.username,automatic:value.automatic,intervalHours:value.intervalHours});setPassword(currentPassword);setSavedPassword(currentPassword);setShowPassword(false)
+   setAutostart(enabled);setWebViewIdleMinutes(idleMinutes);setWebViewIdleDraft(String(idleMinutes));setState(value);setConfig({server:value.server,username:value.username,automatic:value.automatic,intervalHours:value.intervalHours});setPassword(currentPassword);setSavedPassword(currentPassword);setShowPassword(false)
   }).catch(error=>{if(active)toast.add({type:"error",title:"操作失败",description:String(error)})})
   const hotkeyRequest=Promise.all([BrowserService.GetHotkey(),BrowserService.GetHotkeyError()]).then(([value,error])=>{if(active){setHotkey(value);setSavedHotkey(value);setHotkeyError(error)}}).catch(error=>{if(active)setHotkeyError(String(error))})
   const clipboardRequest=Promise.all([ClipboardService.GetEnabled(),BrowserService.GetClipboardHotkey(),BrowserService.GetClipboardHotkeyError(),BrowserService.GetWinVTakeover(),ClipboardService.GetLimits(),ClipboardService.GetStats()]).then(([enabled,value,error,takeover,limits,stats])=>{if(active){setClipboardEnabled(enabled);setClipboardHotkey(value);setSavedClipboardHotkey(value);setClipboardHotkeyError(error);setWinVTakeover(takeover);setClipboardLimits(limits);setSavedClipboardLimits(limits);setClipboardStats(stats)}}).catch(error=>{if(active)setClipboardHotkeyError(String(error))})
@@ -94,6 +97,22 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
      <div className="p-6">
      {tab==="general" && <div className="space-y-7">
       <div className="flex items-center justify-between gap-4"><label className="text-sm font-medium">开机自启</label><Toggle label="开机自启" checked={autostart} disabled={isBusy("autostart") || !state} onChange={value=>void run("autostart",async()=>{await SettingsService.SetAutostart(value);setAutostart(value)})} /></div>
+       <FieldGroup>
+        <Field orientation="horizontal" data-invalid={webViewIdleDraft.trim()==="" || !Number.isInteger(Number(webViewIdleDraft)) || Number(webViewIdleDraft)<1 || Number(webViewIdleDraft)>1440}>
+         <FieldContent>
+          <FieldLabel htmlFor="webview-idle-minutes">界面空闲回收</FieldLabel>
+          <FieldDescription>剪贴板、快捷短语和补全面板隐藏一段时间后释放 WebView，默认 5 分钟。</FieldDescription>
+         </FieldContent>
+         <div className="flex items-center gap-2">
+          <Input id="webview-idle-minutes" type="number" min={1} max={1440} step={1} className="w-24" value={webViewIdleDraft} aria-invalid={webViewIdleDraft.trim()==="" || !Number.isInteger(Number(webViewIdleDraft)) || Number(webViewIdleDraft)<1 || Number(webViewIdleDraft)>1440} disabled={isBusy("webview-idle-minutes")} onChange={event=>setWebViewIdleDraft(event.target.value)} onKeyDown={event=>{if(event.key==="Enter")event.currentTarget.blur()}} onBlur={()=>{
+           const next=Number(webViewIdleDraft)
+           if(webViewIdleDraft.trim()==="" || !Number.isInteger(next) || next<1 || next>1440){setWebViewIdleDraft(String(webViewIdleMinutes));return}
+           if(next!==webViewIdleMinutes)void run("webview-idle-minutes",async()=>{try{await SettingsService.SetWebViewIdleMinutes(next);setWebViewIdleMinutes(next)}catch(error){setWebViewIdleDraft(String(webViewIdleMinutes));throw error}})
+          }} />
+          <span className="text-xs text-muted-foreground">分钟</span>
+         </div>
+        </Field>
+       </FieldGroup>
       <section className="space-y-3 border-t pt-5">
        <label htmlFor="browser-hotkey" className="text-sm font-medium">短语浏览快捷键</label>
        <Input id="browser-hotkey" value={hotkey} readOnly placeholder="点击后按下快捷键" onKeyDown={event=>{

@@ -4,6 +4,7 @@ import (
 	"embed"
 	"log"
 	"os"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -36,16 +37,19 @@ func main() {
 	clipboard := NewClipboardService(nil, clipboardStore, browser)
 	browser.clipboard = clipboard
 	var monitor *InputMonitor
-	var manager *application.WebviewWindow
+	var openManager func()
 	app := application.New(application.Options{
 		Name:        "Quick Paste",
 		Description: "Quick Paste",
+		Windows: application.WindowsOptions{
+			DisableQuitOnLastWindowClosed: true,
+		},
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID: "com.quickpaste.desktop",
 			ExitCode: 0,
 			OnSecondInstanceLaunch: func(data application.SecondInstanceData) {
-				if manager != nil && !isHiddenStart(data.Args) {
-					manager.Show().Focus()
+				if !isHiddenStart(data.Args) && openManager != nil {
+					openManager()
 				}
 			},
 		},
@@ -78,31 +82,30 @@ func main() {
 	clipboard.app = app
 	app.SetIcon(appIcon)
 
-	manager = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             "manager",
-		Title:            "Quick Paste",
-		Width:            1080,
-		Height:           680,
-		MinWidth:         820,
-		MinHeight:        520,
-		Hidden:           isHiddenStart(os.Args[1:]),
-		BackgroundColour: application.NewRGB(255, 255, 255),
-		URL:              "/",
-	})
-	browser.manager = manager
-
-	// 关闭管理窗口只隐藏到托盘，不结束进程。
-	manager.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
-		manager.Hide()
-		event.Cancel()
-	})
+	managerSlot := &lazyWindow{}
+	managerSlot.create = func() *application.WebviewWindow {
+		return app.Window.NewWithOptions(application.WebviewWindowOptions{
+			Name:             "manager",
+			Title:            "Quick Paste",
+			Width:            1080,
+			Height:           680,
+			MinWidth:         820,
+			MinHeight:        520,
+			BackgroundColour: application.NewRGB(255, 255, 255),
+			URL:              "/",
+		})
+	}
+	openManager = func() {
+		managerSlot.Ensure().Show().Focus()
+	}
+	browser.openManager = openManager
 
 	tray := app.SystemTray.New()
 	tray.SetIcon(appIcon)
 	tray.SetTooltip("Quick Paste")
 	trayMenu := app.NewMenu()
 	trayMenu.Add("打开窗口").OnClick(func(*application.Context) {
-		manager.Show().Focus()
+		openManager()
 	})
 	trayMenu.AddSeparator()
 	trayMenu.Add("退出").OnClick(func(*application.Context) {
@@ -110,47 +113,78 @@ func main() {
 	})
 	tray.SetMenu(trayMenu)
 	tray.OnClick(func() {
-		manager.Show().Focus()
+		openManager()
 	})
 
-	// 候选窗复用 React 主题，从创建起就禁止激活。
-	popup := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             "autocomplete",
-		Title:            "Quick Paste Suggestions",
-		Width:            360,
-		Height:           260,
-		Hidden:           true,
-		Frameless:        true,
-		DisableResize:    true,
-		AlwaysOnTop:      true,
-		BackgroundColour: application.NewRGB(255, 255, 255),
-		URL:              "/#popup",
-		Windows: application.WindowsWindow{
-			HiddenOnTaskbar: true,
-			ExStyle:         wsExNoActivate | 0x00000080 | 0x00000008, // TOOLWINDOW | TOPMOST
-		},
-	})
+	idleMinutes, err := settings.GetWebViewIdleMinutes()
+	if err != nil {
+		log.Printf("读取 WebView 空闲回收时间失败，使用默认值: %v", err)
+		idleMinutes = defaultWebViewIdleMinutes
+	}
+	idleWindowRetention := time.Duration(idleMinutes) * time.Minute
+	popupSlot := &lazyWindow{idleDelay: idleWindowRetention}
+	popupSlot.create = func() *application.WebviewWindow {
+		return app.Window.NewWithOptions(application.WebviewWindowOptions{
+			Name:             "autocomplete",
+			Title:            "Quick Paste Suggestions",
+			Width:            360,
+			Height:           260,
+			Hidden:           true,
+			Frameless:        true,
+			DisableResize:    true,
+			AlwaysOnTop:      true,
+			BackgroundColour: application.NewRGB(255, 255, 255),
+			URL:              "/#popup",
+			Windows: application.WindowsWindow{
+				HiddenOnTaskbar: true,
+				ExStyle:         wsExNoActivate | 0x00000080 | 0x00000008,
+			},
+		})
+	}
 
-	browser.window = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name: "phrase-browser", Title: "快捷面板", Width: browserWidth, Height: browserHeight,
-		MinWidth: 300, MinHeight: 260,
-		Hidden: true, Frameless: true, DisableResize: false, AlwaysOnTop: true,
-		BackgroundColour: application.NewRGB(255, 255, 255), URL: "/#browser",
-		Windows: application.WindowsWindow{HiddenOnTaskbar: true, ExStyle: 0x80 | 0x08},
-	})
-	browser.detailWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name: "phrase-detail", Title: "短语详情", Width: 300, Height: 160,
-		Hidden: true, Frameless: true, DisableResize: true, AlwaysOnTop: true,
-		BackgroundType: application.BackgroundTypeTransparent, BackgroundColour: application.NewRGBA(0, 0, 0, 0), URL: "/#detail",
-		Windows: application.WindowsWindow{
-			HiddenOnTaskbar:                   true,
-			DisableFramelessWindowDecorations: true,
-			WebView2CompositionHosting:        true,
-			// ExStyle replaces Wails defaults, so retain NOREDIRECTIONBITMAP for alpha composition.
-			ExStyle: wsExNoActivate | 0x80 | 0x08 | 0x00200000,
-		},
-	})
-	monitor = NewInputMonitor(app, manager, popup, store)
+	browserSlot := &lazyWindow{idleDelay: idleWindowRetention}
+	browserSlot.create = func() *application.WebviewWindow {
+		return app.Window.NewWithOptions(application.WebviewWindowOptions{
+			Name: "phrase-browser", Title: "快捷面板", Width: browserWidth, Height: browserHeight,
+			MinWidth: 300, MinHeight: 260,
+			Hidden: true, Frameless: true, DisableResize: false, AlwaysOnTop: true,
+			BackgroundColour: application.NewRGB(255, 255, 255), URL: "/#browser",
+			Windows: application.WindowsWindow{HiddenOnTaskbar: true, ExStyle: 0x80 | 0x08},
+		})
+	}
+	detailSlot := &lazyWindow{idleDelay: idleWindowRetention}
+	detailSlot.create = func() *application.WebviewWindow {
+		return app.Window.NewWithOptions(application.WebviewWindowOptions{
+			Name: "phrase-detail", Title: "短语详情", Width: 300, Height: 160,
+			Hidden: true, Frameless: true, DisableResize: true, AlwaysOnTop: true,
+			BackgroundType: application.BackgroundTypeTransparent, BackgroundColour: application.NewRGBA(0, 0, 0, 0), URL: "/#detail",
+			Windows: application.WindowsWindow{
+				HiddenOnTaskbar:                   true,
+				DisableFramelessWindowDecorations: true,
+				WebView2CompositionHosting:        true,
+				ExStyle:                           wsExNoActivate | 0x80 | 0x08 | 0x00200000,
+			},
+		})
+	}
+	browser.ensureWindows = func() (*application.WebviewWindow, *application.WebviewWindow) {
+		return browserSlot.Ensure(), detailSlot.Ensure()
+	}
+	browser.releaseWindows = func() {
+		browserSlot.Release()
+		detailSlot.Release()
+	}
+	settings.onWebViewIdleMinutesChanged = func(minutes int) {
+		delay := time.Duration(minutes) * time.Minute
+		popupSlot.SetIdleDelay(delay)
+		browserSlot.SetIdleDelay(delay)
+		detailSlot.SetIdleDelay(delay)
+	}
+
+	monitor = NewInputMonitor(app, store)
+	monitor.managerWindow = managerSlot.Current
+	monitor.ensurePopup = popupSlot.Ensure
+	monitor.popupWindow = popupSlot.Current
+	monitor.releasePopup = popupSlot.Release
 	browser.monitor = monitor
 	monitor.closeBrowser = browser.Hide
 	monitor.browserMouseDown = browser.mouseDown
@@ -163,6 +197,9 @@ func main() {
 		}
 		browser.start()
 		clipboard.start()
+		if !isHiddenStart(os.Args[1:]) {
+			openManager()
+		}
 	})
 
 	if err := app.Run(); err != nil {

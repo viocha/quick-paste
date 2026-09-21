@@ -36,3 +36,26 @@ func TestPopupPrefersBelowAndFlipsAbove(t *testing.T) {
 		t.Fatalf("did not flip above caret: %+v", b)
 	}
 }
+
+func TestFloatingPanelPrefersLowerRightAndClampsAtEdges(t *testing.T) {
+	monitor := rect{0, 0, 1920, 1080}
+
+	b := placeFloatingPanel(rect{100, 100, 101, 101}, monitor, 380, 480, 4)
+	if b != (rect{105, 105, 485, 585}) {
+		t.Fatalf("unexpected lower-right placement: %+v", b)
+	}
+
+	// Only 435 px remain below the pointer. The panel should use that space and
+	// shift upward by the missing 45 px, not flip completely above the pointer.
+	b = placeFloatingPanel(rect{100, 640, 101, 641}, monitor, 380, 480, 4)
+	if b.Top != 600 || b.Bottom != 1080 {
+		t.Fatalf("panel flipped instead of clamping vertically: %+v", b)
+	}
+
+	// Near the right edge, preserve the rightward preference and shift left only
+	// enough to keep the full panel on the monitor.
+	b = placeFloatingPanel(rect{1800, 100, 1801, 101}, monitor, 380, 480, 4)
+	if b.Left != 1540 || b.Right != 1920 {
+		t.Fatalf("panel did not clamp horizontally: %+v", b)
+	}
+}

@@ -186,7 +186,12 @@ func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 	state.hideView = state.hidePopup
 	state.replaceText = sendReplacement
 	go state.runActions()
-	cancelReady := m.app.Event.On("popup-ready", func(*application.CustomEvent) { state.updatePopup() })
+	cancelReady := m.app.Event.On("popup-ready", func(*application.CustomEvent) {
+		state.mu.Lock()
+		state.popupInitialised = false
+		state.mu.Unlock()
+		state.updatePopup()
+	})
 
 	go func() {
 		runtime.LockOSThread()
@@ -259,10 +264,6 @@ func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 		cancelReady()
 		close(state.done)
 		return nil, err
-	}
-
-	if ptr := m.popup.NativeWindow(); ptr != nil {
-		ensurePopupNoActivate(uintptr(ptr))
 	}
 
 	return func() {
@@ -649,10 +650,17 @@ func (s *windowsInputState) hideSuggestions() {
 }
 
 func (s *windowsInputState) render(payload SuggestionPayload) {
-	s.monitor.popup.EmitEvent("suggestions", payload)
+	popup := s.monitor.popupWindow()
+	if popup != nil {
+		popup.EmitEvent("suggestions", payload)
+	}
 }
 
 func (s *windowsInputState) showPopup(payload SuggestionPayload) {
+	popup := s.monitor.ensurePopup()
+	if popup == nil {
+		return
+	}
 	s.render(payload)
 	hwnd := s.popupHWND()
 	if hwnd == 0 {
@@ -687,14 +695,19 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 		procSetWindowPos.Call(hwnd, hwndTopmost, uintptr(int64(x)), uintptr(int64(y)), uintptr(width), uintptr(height), swpNoActivate)
 		// Initialise the WebView visibility once. Subsequent displays use the native
 		// non-activating path, so a second completion cannot steal the editor's focus.
-		if !s.popupInitialised {
+		s.mu.Lock()
+		initialised := s.popupInitialised
+		s.mu.Unlock()
+		if !initialised {
 			foreground, _, _ := procGetForegroundWindow.Call()
-			s.monitor.popup.Show()
+			popup.Show()
 			current, _, _ := procGetForegroundWindow.Call()
 			if current == hwnd && foreground != 0 {
 				procSetForegroundWindow.Call(foreground)
 			}
+			s.mu.Lock()
 			s.popupInitialised = true
+			s.mu.Unlock()
 		}
 		const swShowNoActivate = 4
 		procShowWindow.Call(hwnd, swShowNoActivate)
@@ -711,6 +724,9 @@ func (s *windowsInputState) hidePopup() {
 			procShowWindow.Call(hwnd, 0)
 		}
 	})
+	if s.monitor.releasePopup != nil {
+		s.monitor.releasePopup()
+	}
 }
 
 func ensurePopupNoActivate(hwnd uintptr) {
@@ -728,7 +744,14 @@ func ensurePopupNoActivate(hwnd uintptr) {
 }
 
 func (s *windowsInputState) popupHWND() uintptr {
-	ptr := s.monitor.popup.NativeWindow()
+	if s.monitor.popupWindow == nil {
+		return 0
+	}
+	popup := s.monitor.popupWindow()
+	if popup == nil {
+		return 0
+	}
+	ptr := popup.NativeWindow()
 	if ptr == nil {
 		return 0
 	}
@@ -736,7 +759,14 @@ func (s *windowsInputState) popupHWND() uintptr {
 }
 
 func (s *windowsInputState) managerHWND() uintptr {
-	ptr := s.monitor.manager.NativeWindow()
+	if s.monitor.managerWindow == nil {
+		return 0
+	}
+	manager := s.monitor.managerWindow()
+	if manager == nil {
+		return 0
+	}
+	ptr := manager.NativeWindow()
 	if ptr == nil {
 		return 0
 	}

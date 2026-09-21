@@ -23,11 +23,14 @@ const (
 	taskCreateOrUpdate               = 6
 	taskLogonNone                    = 0
 	taskSchedulerFileNotFoundHResult = 0x80070002
+	defaultWebViewIdleMinutes        = 5
+	maxWebViewIdleMinutes            = 1440
 )
 
 type SettingsService struct {
-	registryPath string
-	app          *application.App
+	registryPath                string
+	app                         *application.App
+	onWebViewIdleMinutesChanged func(int)
 }
 
 func (s *SettingsService) preferencesPath() string {
@@ -113,6 +116,46 @@ func (s *SettingsService) SetTooltipTimeout(timeout int) error {
 	}
 	if s.app != nil {
 		s.app.Event.Emit("tooltip-timeout-changed", timeout)
+	}
+	return nil
+}
+
+func (s *SettingsService) GetWebViewIdleMinutes() (int, error) {
+	key, err := registry.OpenKey(registry.CURRENT_USER, s.preferencesPath(), registry.QUERY_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return defaultWebViewIdleMinutes, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer key.Close()
+	value, _, err := key.GetIntegerValue("WebViewIdleMinutes")
+	if errors.Is(err, registry.ErrNotExist) {
+		return defaultWebViewIdleMinutes, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if value < 1 || value > maxWebViewIdleMinutes {
+		return defaultWebViewIdleMinutes, nil
+	}
+	return int(value), nil
+}
+
+func (s *SettingsService) SetWebViewIdleMinutes(minutes int) error {
+	if minutes < 1 || minutes > maxWebViewIdleMinutes {
+		return fmt.Errorf("空闲回收时间须为 1–%d 分钟", maxWebViewIdleMinutes)
+	}
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, s.preferencesPath(), registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	if err := key.SetDWordValue("WebViewIdleMinutes", uint32(minutes)); err != nil {
+		return err
+	}
+	if s.onWebViewIdleMinutesChanged != nil {
+		s.onWebViewIdleMinutesChanged(minutes)
 	}
 	return nil
 }

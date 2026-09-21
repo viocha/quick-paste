@@ -95,8 +95,10 @@ type hotkeyRequest struct {
 
 type BrowserService struct {
 	window                *application.WebviewWindow
-	manager               *application.WebviewWindow
 	detailWindow          *application.WebviewWindow
+	ensureWindows         func() (*application.WebviewWindow, *application.WebviewWindow)
+	releaseWindows        func()
+	openManager           func()
 	detail                BrowserDetail
 	detailID              string
 	detailRow             rect
@@ -241,9 +243,7 @@ func (s *BrowserService) start() {
 		}
 	}()
 	<-ready
-	if s.window != nil {
-		go s.watchForeground(s.done)
-	}
+	go s.watchForeground(s.done)
 }
 
 func (s *BrowserService) stop() {
@@ -350,6 +350,48 @@ func maskBareModifierActivation() {
 }
 
 func (s *BrowserService) toggle(tab string) {
+	target, _, _ := procGetForegroundWindow.Call()
+	if target == 0 {
+		return
+	}
+	targetFocus := uintptr(0)
+	targetInfo := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&targetInfo))); ok != 0 {
+		targetFocus = uintptr(targetInfo.HwndFocus)
+	}
+	if s.ensureWindows != nil {
+		window, detailWindow := s.ensureWindows()
+		if window == nil || detailWindow == nil {
+			return
+		}
+		browserHWND := uintptr(window.NativeWindow())
+		detailHWND := uintptr(detailWindow.NativeWindow())
+		current, _, _ := procGetForegroundWindow.Call()
+		if current != target {
+			if current != browserHWND && current != detailHWND {
+				return
+			}
+			if err := restoreWindowFocus(target, targetFocus); err != nil {
+				return
+			}
+		}
+		s.mu.Lock()
+		if s.window != window {
+			s.initialised = false
+			s.visible = false
+			s.showPending = false
+		}
+		if s.detailWindow != detailWindow {
+			s.detailInitialised = false
+			s.detailVisible = false
+			s.detailID = ""
+			s.detailTriggerActive = false
+			s.detailLeave = time.Time{}
+		}
+		s.window = window
+		s.detailWindow = detailWindow
+		s.mu.Unlock()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.showPending {
@@ -367,17 +409,12 @@ func (s *BrowserService) toggle(tab string) {
 		return
 	}
 	s.monitor.browserOpen.Store(true)
-	target, _, _ := procGetForegroundWindow.Call()
 	if target == 0 || target == uintptr(s.window.NativeWindow()) || (s.detailWindow != nil && target == uintptr(s.detailWindow.NativeWindow())) {
 		s.monitor.browserOpen.Store(false)
 		return
 	}
 	s.target = target
-	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
-	s.targetFocus = 0
-	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info))); ok != 0 {
-		s.targetFocus = uintptr(info.HwndFocus)
-	}
+	s.targetFocus = targetFocus
 	if s.monitor != nil && s.monitor.resetFn != nil {
 		s.monitor.resetFn()
 	}
@@ -435,55 +472,31 @@ func (s *BrowserService) ReadyToShow() {
 	s.visible = true
 }
 
-// Prewarm lets WebView2 create its first visible composition surface while the
-// native window is positioned off-screen. The real first shortcut opening can
-// then reuse the already initialised surface without flashing a cold frame.
-func (s *BrowserService) Prewarm() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.initialised || s.visible || s.showPending || s.window == nil {
-		return
-	}
-	application.InvokeSync(func() {
-		hwnd := uintptr(s.window.NativeWindow())
-		if hwnd == 0 {
-			return
-		}
-		index := int32(gwlExStyle)
-		style, _, _ := procGetWindowLongW.Call(hwnd, uintptr(uint32(index)))
-		procSetWindowLongW.Call(hwnd, uintptr(uint32(index)), style|wsExNoActivate)
-		// Keep the first native/WebView presentation completely outside the
-		// virtual desktop while preserving the normal window size.
-		offscreen := int32(-32000)
-		procSetWindowPos.Call(hwnd, 0, uintptr(int64(offscreen)), uintptr(int64(offscreen)), 0, 0, swpNoActivate|0x0001|0x0004)
-		s.window.Show()
-		procShowWindow.Call(hwnd, 4) // SW_SHOWNOACTIVATE
-		procDwmFlush.Call()
-		procShowWindow.Call(hwnd, 0) // SW_HIDE
-		procSetWindowLongW.Call(hwnd, uintptr(uint32(index)), style)
-		s.initialised = true
-	})
-}
-
 func (s *BrowserService) hide() {
 	s.hideDetailLocked()
 	s.showPending = false
 	s.dragging = false
 	s.dragSession++
 	s.monitor.browserOpen.Store(false)
-	application.InvokeSync(func() { procShowWindow.Call(uintptr(s.window.NativeWindow()), 0) })
+	if s.window != nil {
+		application.InvokeSync(func() { procShowWindow.Call(uintptr(s.window.NativeWindow()), 0) })
+	}
 	s.visible = false
-	s.window.EmitEvent("browser-hidden")
+	if s.window != nil {
+		s.window.EmitEvent("browser-hidden")
+	}
+	if s.releaseWindows != nil {
+		s.releaseWindows()
+	}
 }
 func (s *BrowserService) Hide() { s.mu.Lock(); defer s.mu.Unlock(); s.hide() }
 
 func (s *BrowserService) OpenManager() {
 	s.mu.Lock()
 	s.hide()
-	manager := s.manager
 	s.mu.Unlock()
-	if manager != nil {
-		application.InvokeSync(func() { manager.Show().Focus() })
+	if s.openManager != nil {
+		s.openManager()
 	}
 }
 
@@ -554,7 +567,7 @@ func (s *BrowserService) positionLocked(hwnd uintptr) {
 	if ok, _, _ := getWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&current))); ok != 0 && current.Right > current.Left && current.Bottom > current.Top {
 		width, height = int(current.Right-current.Left), int(current.Bottom-current.Top)
 	}
-	bounds := placePopup(anchor, info.Work, width, height, gap)
+	bounds := placeFloatingPanel(anchor, info.Monitor, width, height, gap)
 	procSetWindowPos.Call(hwnd, hwndTopmost, uintptr(int64(bounds.Left)), uintptr(int64(bounds.Top)), uintptr(bounds.Right-bounds.Left), uintptr(bounds.Bottom-bounds.Top), swpNoActivate)
 }
 
@@ -685,13 +698,17 @@ func (s *BrowserService) pasteClipboard(write func() error) error {
 }
 
 func (s *BrowserService) restoreTargetLocked() error {
+	return restoreWindowFocus(s.target, s.targetFocus)
+}
+
+func restoreWindowFocus(target, targetFocus uintptr) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	currentThread, _, _ := procGetCurrentThreadID.Call()
 	for attempt := 0; attempt < 6; attempt++ {
 		foreground, _, _ := procGetForegroundWindow.Call()
 		foregroundThread, _, _ := procGetWindowThreadProcessBrowser.Call(foreground, 0)
-		targetThread, _, _ := procGetWindowThreadProcessBrowser.Call(s.target, 0)
+		targetThread, _, _ := procGetWindowThreadProcessBrowser.Call(target, 0)
 		attachedForeground := foregroundThread != 0 && foregroundThread != currentThread
 		attachedTarget := targetThread != 0 && targetThread != currentThread && targetThread != foregroundThread
 		if attachedForeground {
@@ -700,11 +717,11 @@ func (s *BrowserService) restoreTargetLocked() error {
 		if attachedTarget {
 			procAttachThreadInputBrowser.Call(currentThread, targetThread, 1)
 		}
-		procBringWindowToTopBrowser.Call(s.target)
-		procSetForegroundWindow.Call(s.target)
-		if s.targetFocus != 0 {
-			if ok, _, _ := user32.NewProc("IsChild").Call(s.target, s.targetFocus); ok != 0 || s.targetFocus == s.target {
-				user32.NewProc("SetFocus").Call(s.targetFocus)
+		procBringWindowToTopBrowser.Call(target)
+		procSetForegroundWindow.Call(target)
+		if targetFocus != 0 {
+			if ok, _, _ := user32.NewProc("IsChild").Call(target, targetFocus); ok != 0 || targetFocus == target {
+				user32.NewProc("SetFocus").Call(targetFocus)
 			}
 		}
 		if attachedTarget {
@@ -715,7 +732,7 @@ func (s *BrowserService) restoreTargetLocked() error {
 		}
 		time.Sleep(time.Duration(20+attempt*10) * time.Millisecond)
 		current, _, _ := procGetForegroundWindow.Call()
-		if current == s.target {
+		if current == target {
 			return nil
 		}
 	}

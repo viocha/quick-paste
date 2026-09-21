@@ -17,6 +17,10 @@ export function GetTooltipTimeout(): $CancellablePromise<number> {
     return $Call.ByID(2126497358);
 }
 
+export function GetWebViewIdleMinutes(): $CancellablePromise<number> {
+    return $Call.ByID(3537623494);
+}
+
 export function SetAutostart(enabled: boolean): $CancellablePromise<void> {
     return $Call.ByID(848055361, enabled);
 }
@@ -27,4 +31,8 @@ export function SetTooltipDelay(delay: number): $CancellablePromise<void> {
 
 export function SetTooltipTimeout(timeout: number): $CancellablePromise<void> {
     return $Call.ByID(3788761442, timeout);
+}
+
+export function SetWebViewIdleMinutes(minutes: number): $CancellablePromise<void> {
+    return $Call.ByID(4125923418, minutes);
 }

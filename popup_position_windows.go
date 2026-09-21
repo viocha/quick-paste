@@ -34,3 +34,20 @@ func placePopup(caret, work rect, width, height, gap int) rect {
 	y = max(top, min(y, bottom-h))
 	return rect{x, y, x + w, y + h}
 }
+
+// The floating browser prefers the lower-right of the pointer. When that
+// placement would cross the work area, shift it only as far as necessary to
+// keep the whole window visible instead of flipping the entire panel.
+func placeFloatingPanel(anchor, work rect, width, height, gap int) rect {
+	w := min(int32(width), work.Right-work.Left)
+	h := min(int32(height), work.Bottom-work.Top)
+	if w <= 0 || h <= 0 {
+		return work
+	}
+	g := int32(gap)
+	x := anchor.Right + g
+	y := anchor.Bottom + g
+	x = max(work.Left, min(x, work.Right-w))
+	y = max(work.Top, min(y, work.Bottom-h))
+	return rect{x, y, x + w, y + h}
+}

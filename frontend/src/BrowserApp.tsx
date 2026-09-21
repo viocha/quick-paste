@@ -190,7 +190,7 @@ export function BrowserApp() {
       if(firstLoad)setLoading(true)
       else if(requested)setShowRequestVersion(current=>current+1)
       const tasks=requested==="clipboard"?[reloadClipboard("")]:requested==="phrase"?[reloadPhrases()]:[reloadPhrases(),reloadClipboard("")]
-      void Promise.all(tasks).catch(e=>active&&setError(String(e))).finally(()=>{if(active){loadedOnce.current=true;setLoading(false);if(requested&&firstLoad)setShowRequestVersion(current=>current+1)}})
+      void Promise.all(tasks).catch(e=>active&&setError(String(e))).finally(()=>{if(active){loadedOnce.current=true;setLoading(false);if(firstLoad)setShowRequestVersion(current=>current+1)}})
     }
     const changed=()=>{if(active)void reloadClipboard().catch(e=>setError(String(e)))}
     const cancelRefresh=Events.On("browser-refresh",refresh)
@@ -220,12 +220,6 @@ export function BrowserApp() {
     const timer=window.setTimeout(()=>void BrowserService.ReadyToShow(),0)
     return ()=>window.clearTimeout(timer)
   },[showRequestVersion,loading])
-  useEffect(()=>{
-    if(loading||!loadedOnce.current)return
-    const timer=window.setTimeout(()=>void BrowserService.Prewarm().catch(()=>{}),0)
-    return ()=>window.clearTimeout(timer)
-  },[loading])
-
   const run=async(action:()=>Promise<unknown>)=>{
     if(busy)return
     setBusy(true);setError("")
