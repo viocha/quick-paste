@@ -39,7 +39,7 @@ func main() {
 	var manager *application.WebviewWindow
 	app := application.New(application.Options{
 		Name:        "Quick Paste",
-		Description: "Quick Paste clipboard and phrase tool",
+		Description: "Quick Paste",
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID: "com.quickpaste.desktop",
 			ExitCode: 0,
