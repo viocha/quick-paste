@@ -18,7 +18,7 @@
         PublisherName="CN=My Company"
         PublisherDisplayName="My Company"
         Version="0.1.0.0"
-        PackageDescription="快捷粘贴">
+        PackageDescription="Quick Paste clipboard and phrase tool">
         <Capabilities>
             <Capability Name="runFullTrust" />
             
@@ -26,7 +26,7 @@
         <Applications>
             <Application
                 Id="com.local.quickpaste"
-                Description="快捷粘贴"
+                Description="Quick Paste clipboard and phrase tool"
                 DisplayName="Quick Paste"
                 ExecutableName="quick-paste.exe"
                 EntryPoint="Windows.FullTrustApplication">
@@ -43,7 +43,7 @@
             <Framework>false</Framework>
             <DisplayName>Quick Paste</DisplayName>
             <PublisherDisplayName>My Company</PublisherDisplayName>
-            <Description>快捷粘贴</Description>
+            <Description>Quick Paste clipboard and phrase tool</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>

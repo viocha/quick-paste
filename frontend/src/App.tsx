@@ -465,7 +465,7 @@ function ManagerApp() {
       >
         <Sidebar collapsible="none">
           <SidebarHeader className="flex h-13 flex-row items-center justify-between border-b px-4">
-            <div className="truncate text-sm font-semibold">快捷短语</div>
+            <div className="truncate text-sm font-semibold">Quick Paste</div>
             <div className="flex items-center">
               <Button variant="ghost" size="icon-sm" aria-label="帮助" onClick={()=>setHelpOpen(true)}><CircleHelpIcon /></Button>
               <Button variant="ghost" size="icon-sm" aria-label="设置" onClick={()=>void openSettings()}><SettingsIcon /></Button>

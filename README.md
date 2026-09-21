@@ -1,6 +1,6 @@
-# quick-paste
+# Quick Paste
 
-Windows 快捷粘贴应用，使用 Go、Wails 3、React 和 Bun。
+Quick Paste 是一个使用 Go、Wails 3、React 和 Bun 构建的 Windows 快速粘贴工具。
 
 - 开发：`wails3 dev`
 - 构建：`wails3 build`
