@@ -4,7 +4,7 @@ version: '3'
 # This information is used to generate the build assets.
 info:
   companyName: "Local" # The name of the company
-  productName: "quick-paste" # The name of the application
+  productName: "Quick Paste" # The name of the application
   productIdentifier: "com.local.quickpaste" # The unique product identifier
   description: "快捷粘贴" # The application description
   copyright: "" # Copyright text

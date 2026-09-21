@@ -14,7 +14,7 @@
     ProcessorArchitecture="x64" />
   
   <Properties>
-    <DisplayName>quick-paste</DisplayName>
+    <DisplayName>Quick Paste</DisplayName>
     <PublisherDisplayName>My Company</PublisherDisplayName>
     <Description>快捷粘贴</Description>
     <Logo>Assets\StoreLogo.png</Logo>
@@ -31,7 +31,7 @@
   <Applications>
     <Application Id="com.local.quickpaste" Executable="quick-paste.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="quick-paste"
+        DisplayName="Quick Paste"
         Description="快捷粘贴"
         BackgroundColor="transparent"
         Square150x150Logo="Assets\Square150x150Logo.png"

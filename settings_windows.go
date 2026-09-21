@@ -207,7 +207,7 @@ func autostartTaskXML(executable, username string) string {
 	executable = escape(executable)
 	username = escape(username)
 	return fmt.Sprintf(`<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>quick-paste 开机自启</Description></RegistrationInfo>
+  <RegistrationInfo><Description>Quick Paste 开机自启</Description></RegistrationInfo>
   <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>%s</UserId></LogonTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>%s</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
   <Settings>

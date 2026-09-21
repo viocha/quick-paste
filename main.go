@@ -38,7 +38,7 @@ func main() {
 	var monitor *InputMonitor
 	var manager *application.WebviewWindow
 	app := application.New(application.Options{
-		Name:        "quick-paste",
+		Name:        "Quick Paste",
 		Description: "快捷粘贴",
 		SingleInstance: &application.SingleInstanceOptions{
 			UniqueID: "com.quickpaste.desktop",
@@ -80,7 +80,7 @@ func main() {
 
 	manager = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "manager",
-		Title:            "quick-paste",
+		Title:            "Quick Paste",
 		Width:            1080,
 		Height:           680,
 		MinWidth:         820,
@@ -99,7 +99,7 @@ func main() {
 
 	tray := app.SystemTray.New()
 	tray.SetIcon(appIcon)
-	tray.SetTooltip("quick-paste")
+	tray.SetTooltip("Quick Paste")
 	trayMenu := app.NewMenu()
 	trayMenu.Add("打开窗口").OnClick(func(*application.Context) {
 		manager.Show().Focus()
@@ -116,7 +116,7 @@ func main() {
 	// 候选窗复用 React 主题，从创建起就禁止激活。
 	popup := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "autocomplete",
-		Title:            "quick-paste Suggestions",
+		Title:            "Quick Paste Suggestions",
 		Width:            360,
 		Height:           260,
 		Hidden:           true,
