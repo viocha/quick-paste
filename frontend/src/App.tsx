@@ -8,7 +8,6 @@ import type { CSSProperties, DragEvent } from "react"
 import {
   CheckIcon,
   CircleHelpIcon,
-  FileTextIcon,
   FolderIcon,
   FolderOpenIcon,
   PencilIcon,
@@ -612,9 +611,8 @@ function PopupApp() {
               key={item.id}
               role="option"
               aria-selected={index === payload.active}
-              className="flex h-7 items-center gap-1.5 rounded-sm px-2 text-sm aria-selected:bg-accent aria-selected:text-accent-foreground"
+              className="flex h-7 items-center rounded-sm px-2 text-sm aria-selected:bg-accent aria-selected:text-accent-foreground"
             >
-              <FileTextIcon className="size-4 shrink-0 text-muted-foreground" />
               <span className="truncate">
                 <span className="font-medium">{item.name.slice(0, payload.query.length)}</span>
                 <span className="text-muted-foreground">{item.name.slice(payload.query.length)}</span>

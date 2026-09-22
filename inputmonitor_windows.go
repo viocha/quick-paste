@@ -167,6 +167,10 @@ type windowsInputState struct {
 	pending          []func()
 	done             chan struct{}
 	popupInitialised bool
+	popupPositioned  bool
+	popupX           int32
+	popupY           int32
+	popupDPI         uintptr
 	showView         func(SuggestionPayload)
 	hideView         func()
 	replaceText      func(int, string) error
@@ -189,6 +193,7 @@ func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 	cancelReady := m.app.Event.On("popup-ready", func(*application.CustomEvent) {
 		state.mu.Lock()
 		state.popupInitialised = false
+		state.popupPositioned = false
 		state.mu.Unlock()
 		state.updatePopup()
 	})
@@ -667,29 +672,52 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 		return
 	}
 	ensurePopupNoActivate(hwnd)
-	target, _, _ := procGetForegroundWindow.Call()
-	caret := caretScreenRect()
-	current, _, _ := procGetForegroundWindow.Call()
-	if current != target {
-		return
-	}
 
 	const logicalWidth = 280
 	const rowHeight = 28
 	const listPadding = 8
+	const logicalLeftOffset = 12
 	logicalHeight := listPadding + min(len(payload.Items), 6)*rowHeight
-	monitor, _, _ := procMonitorFromRect.Call(uintptr(unsafe.Pointer(&caret)), 2)
-	info := monitorInfo{Size: uint32(unsafe.Sizeof(monitorInfo{}))}
-	if ok, _, _ := procGetMonitorInfo.Call(monitor, uintptr(unsafe.Pointer(&info))); ok == 0 {
-		return
+
+	s.mu.Lock()
+	positioned := s.popupPositioned
+	x, y, dpi := s.popupX, s.popupY, s.popupDPI
+	s.mu.Unlock()
+
+	if !positioned {
+		target, _, _ := procGetForegroundWindow.Call()
+		caret := caretScreenRect()
+		current, _, _ := procGetForegroundWindow.Call()
+		if current != target {
+			return
+		}
+
+		monitor, _, _ := procMonitorFromRect.Call(uintptr(unsafe.Pointer(&caret)), 2)
+		info := monitorInfo{Size: uint32(unsafe.Sizeof(monitorInfo{}))}
+		if ok, _, _ := procGetMonitorInfo.Call(monitor, uintptr(unsafe.Pointer(&info))); ok == 0 {
+			return
+		}
+		dpi = uintptr(96)
+		var dpiX, dpiY uint32
+		if hr, _, _ := procGetDpiForMonitor.Call(monitor, 0, uintptr(unsafe.Pointer(&dpiX)), uintptr(unsafe.Pointer(&dpiY))); int32(hr) >= 0 && dpiX > 0 {
+			dpi = uintptr(dpiX)
+		}
+		caret.Left -= int32(scaleForDPI(logicalLeftOffset, dpi))
+		bounds := placePopup(caret, info.Work, scaleForDPI(logicalWidth, dpi), scaleForDPI(logicalHeight, dpi), scaleForDPI(4, dpi))
+		x, y = bounds.Left, bounds.Top
+
+		s.mu.Lock()
+		s.popupPositioned = true
+		s.popupX = x
+		s.popupY = y
+		s.popupDPI = dpi
+		s.mu.Unlock()
 	}
-	dpi := uintptr(96)
-	var dpiX, dpiY uint32
-	if hr, _, _ := procGetDpiForMonitor.Call(monitor, 0, uintptr(unsafe.Pointer(&dpiX)), uintptr(unsafe.Pointer(&dpiY))); int32(hr) >= 0 && dpiX > 0 {
-		dpi = uintptr(dpiX)
+	if dpi == 0 {
+		dpi = 96
 	}
-	bounds := placePopup(caret, info.Work, scaleForDPI(logicalWidth, dpi), scaleForDPI(logicalHeight, dpi), scaleForDPI(4, dpi))
-	x, y, width, height := bounds.Left, bounds.Top, bounds.Right-bounds.Left, bounds.Bottom-bounds.Top
+	width := int32(scaleForDPI(logicalWidth, dpi))
+	height := int32(scaleForDPI(logicalHeight, dpi))
 
 	application.InvokeSync(func() {
 		procSetWindowPos.Call(hwnd, hwndTopmost, uintptr(int64(x)), uintptr(int64(y)), uintptr(width), uintptr(height), swpNoActivate)
@@ -719,6 +747,12 @@ func scaleForDPI(value int, dpi uintptr) int {
 }
 
 func (s *windowsInputState) hidePopup() {
+	s.mu.Lock()
+	s.popupPositioned = false
+	s.popupX = 0
+	s.popupY = 0
+	s.popupDPI = 0
+	s.mu.Unlock()
 	application.InvokeSync(func() {
 		if hwnd := s.popupHWND(); hwnd != 0 {
 			procShowWindow.Call(hwnd, 0)
