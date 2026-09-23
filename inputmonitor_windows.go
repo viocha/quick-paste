@@ -676,7 +676,7 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 	const logicalWidth = 280
 	const rowHeight = 28
 	const listPadding = 8
-	const logicalLeftOffset = 12
+	const logicalLeftOffset = 24
 	logicalHeight := listPadding + min(len(payload.Items), 6)*rowHeight
 
 	s.mu.Lock()

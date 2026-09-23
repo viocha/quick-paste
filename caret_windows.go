@@ -113,6 +113,17 @@ func automationCaret() (rect, bool) {
 		return rect{}, false
 	}
 	defer element.release()
+	// 密码控件的 TextPattern 选择范围可能指向其他位置；优先使用 IA2 光标。
+	var isPassword int32
+	var elementBounds rect
+	passwordOK := element.call(35, uintptr(unsafe.Pointer(&isPassword)))
+	boundsOK := element.call(43, uintptr(unsafe.Pointer(&elementBounds)))
+	if passwordOK && isPassword != 0 && boundsOK && elementBounds.Right > elementBounds.Left && elementBounds.Bottom > elementBounds.Top {
+		if caret, ok := ia2CaretFromElement(elementBounds); ok {
+			return caret, true
+		}
+		return elementBounds, true
+	}
 	for _, spec := range []struct {
 		id  uintptr
 		iid *windows.GUID
