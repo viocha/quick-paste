@@ -151,37 +151,41 @@ type keybdInput struct {
 type windowsInputState struct {
 	monitor *InputMonitor
 
-	mu               sync.Mutex
-	query            string
-	suggestions      []Suggestion
-	active           int
-	threadID         uint32
-	hook             windows.Handle
-	mouseHook        windows.Handle
-	closed           bool
-	lastForeground   uintptr
-	swallowKeyUp     map[uint32]bool
-	winVDown         bool
-	actions          chan struct{}
-	actionMu         sync.Mutex
-	pending          []func()
-	done             chan struct{}
-	popupInitialised bool
-	popupPositioned  bool
-	popupX           int32
-	popupY           int32
-	popupDPI         uintptr
-	showView         func(SuggestionPayload)
-	hideView         func()
-	replaceText      func(int, string) error
+	mu                sync.Mutex
+	query             string
+	suggestions       []Suggestion
+	active            int
+	threadID          uint32
+	hook              windows.Handle
+	mouseHook         windows.Handle
+	closed            bool
+	lastForeground    uintptr
+	swallowKeyUp      map[uint32]bool
+	pendingPopupKeyUp map[uint32]bool
+	winVDown          bool
+	actions           chan struct{}
+	actionMu          sync.Mutex
+	pending           []func()
+	done              chan struct{}
+	popupInitialised  bool
+	popupPositioned   bool
+	popupX            int32
+	popupY            int32
+	popupDPI          uintptr
+	queryStartCaret   rect
+	queryStartValid   bool
+	showView          func(SuggestionPayload)
+	hideView          func()
+	replaceText       func(int, string) error
 }
 
 func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 	state := &windowsInputState{
-		monitor:      m,
-		swallowKeyUp: make(map[uint32]bool),
-		actions:      make(chan struct{}, 1),
-		done:         make(chan struct{}),
+		monitor:           m,
+		swallowKeyUp:      make(map[uint32]bool),
+		pendingPopupKeyUp: make(map[uint32]bool),
+		actions:           make(chan struct{}, 1),
+		done:              make(chan struct{}),
 	}
 	ready := make(chan error, 1)
 
@@ -193,7 +197,6 @@ func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 	cancelReady := m.app.Event.On("popup-ready", func(*application.CustomEvent) {
 		state.mu.Lock()
 		state.popupInitialised = false
-		state.popupPositioned = false
 		state.mu.Unlock()
 		state.updatePopup()
 	})
@@ -327,8 +330,9 @@ func (s *windowsInputState) updatePopup() {
 	s.enqueue(func() {
 		s.mu.Lock()
 		payload := SuggestionPayload{Query: s.query, Items: append([]Suggestion{}, s.suggestions...), Active: s.active}
+		deferFirstShow := len(s.pendingPopupKeyUp) > 0
 		s.mu.Unlock()
-		if len(payload.Items) == 0 {
+		if len(payload.Items) == 0 || deferFirstShow {
 			s.hideView()
 		} else {
 			s.showView(payload)
@@ -356,6 +360,9 @@ func (s *windowsInputState) handleMouseClick() {
 	s.query = ""
 	s.suggestions = nil
 	s.active = 0
+	s.queryStartCaret = rect{}
+	s.queryStartValid = false
+	clear(s.pendingPopupKeyUp)
 	s.mu.Unlock()
 	if visible {
 		s.updatePopup()
@@ -411,7 +418,15 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 		if swallow {
 			delete(s.swallowKeyUp, vk)
 		}
+		_, pendingPopup := s.pendingPopupKeyUp[vk]
+		if pendingPopup {
+			delete(s.pendingPopupKeyUp, vk)
+		}
+		showPopup := pendingPopup && len(s.pendingPopupKeyUp) == 0 && len(s.suggestions) > 0
 		s.mu.Unlock()
+		if showPopup {
+			s.updatePopup()
+		}
 		return swallow
 	}
 
@@ -477,7 +492,7 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 
 	switch vk {
 	case vkBack:
-		s.backspace()
+		s.backspaceKey(vk)
 		return false
 	case vkSpace, vkTab, vkReturn, vkLeft, vkRight, vkHome, vkEnd, vkDelete, vkPrior, vkNext:
 		s.reset()
@@ -492,7 +507,7 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 		s.reset()
 		return false
 	}
-	s.append(ch)
+	s.appendKey(ch, vk)
 	return false
 }
 
@@ -559,14 +574,47 @@ func isTokenChar(ch rune) bool {
 }
 
 func (s *windowsInputState) append(ch rune) {
+	s.appendWithKeyUp(ch, 0)
+}
+
+func (s *windowsInputState) appendKey(ch rune, vk uint32) {
+	s.captureQueryStartCaret()
+	s.appendWithKeyUp(ch, vk)
+}
+
+func (s *windowsInputState) captureQueryStartCaret() {
+	s.mu.Lock()
+	empty := s.query == ""
+	s.mu.Unlock()
+	if !empty {
+		return
+	}
+	bounds, ok := win32CaretScreenRect()
+	s.mu.Lock()
+	if s.query == "" {
+		s.queryStartCaret = bounds
+		s.queryStartValid = ok
+	}
+	s.mu.Unlock()
+}
+
+func (s *windowsInputState) appendWithKeyUp(ch rune, vk uint32) {
 	s.mu.Lock()
 	s.query += string(ch)
 	query := s.query
 	s.mu.Unlock()
-	s.refresh(query)
+	s.refresh(query, vk)
 }
 
 func (s *windowsInputState) backspace() {
+	s.backspaceWithKeyUp(0)
+}
+
+func (s *windowsInputState) backspaceKey(vk uint32) {
+	s.backspaceWithKeyUp(vk)
+}
+
+func (s *windowsInputState) backspaceWithKeyUp(vk uint32) {
 	s.mu.Lock()
 	runes := []rune(s.query)
 	if len(runes) > 0 {
@@ -574,11 +622,15 @@ func (s *windowsInputState) backspace() {
 	}
 	s.query = string(runes)
 	query := s.query
+	if query == "" {
+		s.queryStartCaret = rect{}
+		s.queryStartValid = false
+	}
 	s.mu.Unlock()
-	s.refresh(query)
+	s.refresh(query, vk)
 }
 
-func (s *windowsInputState) refresh(query string) {
+func (s *windowsInputState) refresh(query string, keyUpVK uint32) {
 	if utf8.RuneCountInString(query) < 3 {
 		s.hideSuggestions()
 		return
@@ -594,7 +646,20 @@ func (s *windowsInputState) refresh(query string) {
 	if s.active < 0 || s.active >= len(items) {
 		s.active = 0
 	}
+	// 低级键盘钩子的 keydown 发生在目标应用真正处理该按键之前。
+	// 首次弹出时等对应 keyup 再读取 caret，避免冷启动创建 WebView 的耗时
+	// 偶然让 caret 更“新”，而热启动却读到上一个字符的位置。
+	deferFirstShow := !s.popupPositioned && keyUpVK != 0
+	if deferFirstShow {
+		if s.pendingPopupKeyUp == nil {
+			s.pendingPopupKeyUp = make(map[uint32]bool)
+		}
+		s.pendingPopupKeyUp[keyUpVK] = true
+	}
 	s.mu.Unlock()
+	if deferFirstShow {
+		return
+	}
 	s.updatePopup()
 }
 
@@ -621,6 +686,8 @@ func (s *windowsInputState) accept() {
 	s.query = ""
 	s.suggestions = nil
 	s.active = 0
+	s.queryStartCaret = rect{}
+	s.queryStartValid = false
 	s.mu.Unlock()
 
 	backspaces := utf8.RuneCountInString(query)
@@ -642,6 +709,9 @@ func (s *windowsInputState) reset() {
 	s.query = ""
 	s.suggestions = nil
 	s.active = 0
+	s.queryStartCaret = rect{}
+	s.queryStartValid = false
+	clear(s.pendingPopupKeyUp)
 	s.mu.Unlock()
 	s.updatePopup()
 }
@@ -650,6 +720,7 @@ func (s *windowsInputState) hideSuggestions() {
 	s.mu.Lock()
 	s.suggestions = nil
 	s.active = 0
+	clear(s.pendingPopupKeyUp)
 	s.mu.Unlock()
 	s.updatePopup()
 }
@@ -662,17 +733,6 @@ func (s *windowsInputState) render(payload SuggestionPayload) {
 }
 
 func (s *windowsInputState) showPopup(payload SuggestionPayload) {
-	popup := s.monitor.ensurePopup()
-	if popup == nil {
-		return
-	}
-	s.render(payload)
-	hwnd := s.popupHWND()
-	if hwnd == 0 {
-		return
-	}
-	ensurePopupNoActivate(hwnd)
-
 	const logicalWidth = 280
 	const rowHeight = 28
 	const listPadding = 8
@@ -684,11 +744,19 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 	x, y, dpi := s.popupX, s.popupY, s.popupDPI
 	s.mu.Unlock()
 
+	var positionTarget uintptr
+	positionComputed := false
 	if !positioned {
-		target, _, _ := procGetForegroundWindow.Call()
-		caret := caretScreenRect()
+		// Capture the target caret before creating the lazy WebView. Window creation
+		// can perturb TSF/UIA composition state on the cold path; the warm path does
+		// not create a window here, which used to make IME positioning differ.
+		positionTarget, _, _ = procGetForegroundWindow.Call()
+		caret, caretSource, found := autocompleteCaretScreenAnchor(payload.Query)
+		if !found {
+			return
+		}
 		current, _, _ := procGetForegroundWindow.Call()
-		if current != target {
+		if current != positionTarget {
 			return
 		}
 
@@ -702,10 +770,36 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 		if hr, _, _ := procGetDpiForMonitor.Call(monitor, 0, uintptr(unsafe.Pointer(&dpiX)), uintptr(unsafe.Pointer(&dpiY))); int32(hr) >= 0 && dpiX > 0 {
 			dpi = uintptr(dpiX)
 		}
-		caret.Left -= int32(scaleForDPI(logicalLeftOffset, dpi))
+		s.mu.Lock()
+		queryStartCaret, queryStartValid := s.queryStartCaret, s.queryStartValid
+		s.mu.Unlock()
+		applyLeftOffset := shouldApplyQueryLeftOffset(caretSource, queryStartCaret, queryStartValid, caret)
+		if applyLeftOffset {
+			caret.Left -= int32(scaleForDPI(logicalLeftOffset, dpi))
+		}
 		bounds := placePopup(caret, info.Work, scaleForDPI(logicalWidth, dpi), scaleForDPI(logicalHeight, dpi), scaleForDPI(4, dpi))
 		x, y = bounds.Left, bounds.Top
+		positionComputed = true
+	}
 
+	popup := s.monitor.ensurePopup()
+	if popup == nil {
+		return
+	}
+	s.render(payload)
+	hwnd := s.popupHWND()
+	if hwnd == 0 {
+		return
+	}
+	ensurePopupNoActivate(hwnd)
+
+	if positionComputed {
+		// If lazy window creation did change focus, discard the precomputed position.
+		// popup-ready will enqueue another update after the WebView has settled.
+		current, _, _ := procGetForegroundWindow.Call()
+		if current != positionTarget {
+			return
+		}
 		s.mu.Lock()
 		s.popupPositioned = true
 		s.popupX = x

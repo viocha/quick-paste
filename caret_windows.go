@@ -6,6 +6,7 @@ import (
 	"golang.org/x/sys/windows"
 	"math"
 	"runtime"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -21,6 +22,7 @@ var (
 	safeArrayGetUBound         = oleaut32.NewProc("SafeArrayGetUBound")
 	safeArrayAccessData        = oleaut32.NewProc("SafeArrayAccessData")
 	safeArrayUnaccessData      = oleaut32.NewProc("SafeArrayUnaccessData")
+	sysFreeString              = oleaut32.NewProc("SysFreeString")
 	accessibleObjectFromWindow = windows.NewLazySystemDLL("oleacc.dll").NewProc("AccessibleObjectFromWindow")
 	getWindowRect              = user32.NewProc("GetWindowRect")
 )
@@ -50,48 +52,23 @@ func caretGUID(value string) *windows.GUID {
 var (
 	clsidAutomation = caretGUID("{ff48dba4-60ef-4201-aa87-54103eef594e}")
 	iidAutomation   = caretGUID("{30cbe57d-d9d0-452a-ab13-7ac5ac4825ee}")
+	iidTextEdit     = caretGUID("{17e21576-996c-4870-99d9-bff323380c06}")
 	iidText2        = caretGUID("{506a921a-fcc9-409f-b23b-37eb74106872}")
 	iidText         = caretGUID("{32eba289-3583-42c9-9c59-3b6d9a1e9b6a}")
+	iidLegacy       = caretGUID("{828055ad-355b-4435-86d5-3b51c14a9b1b}")
+	iidValue        = caretGUID("{a94cd8b1-0844-4cd6-9d2d-640537ab39e9}")
 	iidAccessible   = caretGUID("{618736e0-3c3d-11cf-810c-00aa00389b71}")
 )
 
-func caretScreenRect() rect { return caretScreenRectWithFallback(false) }
-
-func caretScreenRectWithFallback(mouseFallback bool) rect {
+// caretScreenRect is used only as a last-resort anchor for the manually opened
+// browser. Automatic completion must use autocompleteCaretScreenRect instead so
+// a focused control/window rectangle can never be mistaken for a text caret.
+func caretScreenRect() rect {
+	if bounds, found := autocompleteCaretScreenRect(""); found {
+		return bounds
+	}
 	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
-	ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info)))
-	if ok != 0 && info.HwndCaret != 0 && info.RcCaret.Bottom > info.RcCaret.Top {
-		origin := point{X: info.RcCaret.Left, Y: info.RcCaret.Top}
-		converted, _, _ := procClientToScreen.Call(uintptr(info.HwndCaret), uintptr(unsafe.Pointer(&origin)))
-		if converted != 0 {
-			return rect{origin.X, origin.Y, origin.X + info.RcCaret.Right - info.RcCaret.Left, origin.Y + info.RcCaret.Bottom - info.RcCaret.Top}
-		}
-	}
-	// Browser/Electron and other custom editors expose their caret through UIA/MSAA.
-	// COM objects are created, used and released on the same MTA thread.
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	hr, _, _ := coInitializeEx.Call(0, 0)
-	if int32(hr) >= 0 {
-		defer coUninitialize.Call()
-		if bounds, found := automationCaret(); found {
-			return bounds
-		}
-		for _, hwnd := range []uintptr{uintptr(info.HwndFocus), 0} {
-			if bounds, found := accessibleCaret(hwnd); found {
-				return bounds
-			}
-		}
-	}
-	// The manually opened browser can fall back to the pointer when no text
-	// caret is exposed. Automatic completion keeps its focused-control fallback.
-	if mouseFallback {
-		var cursor point
-		if ok, _, _ := user32.NewProc("GetCursorPos").Call(uintptr(unsafe.Pointer(&cursor))); ok != 0 {
-			return rect{cursor.X, cursor.Y, cursor.X + 1, cursor.Y + 1}
-		}
-	}
-	// If an editor exposes no caret, anchor to the focused control, never the mouse.
+	procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info)))
 	target := uintptr(info.HwndFocus)
 	if target == 0 {
 		target, _, _ = procGetForegroundWindow.Call()
@@ -101,7 +78,209 @@ func caretScreenRectWithFallback(mouseFallback bool) rect {
 	return bounds
 }
 
-func automationCaret() (rect, bool) {
+type autocompleteCaretSource uint8
+
+const (
+	autocompleteCaretUnknown autocompleteCaretSource = iota
+	autocompleteCaretComposition
+	autocompleteCaretWin32
+	autocompleteCaretAutomation
+	autocompleteCaretAccessible
+)
+
+// autocompleteCaretScreenRect returns only coordinates that are credibly a
+// text insertion point. It deliberately has no focused-control/window fallback.
+func autocompleteCaretScreenRect(query string) (rect, bool) {
+	bounds, _, found := autocompleteCaretScreenAnchor(query)
+	return bounds, found
+}
+
+func autocompleteCaretScreenAnchor(query string) (rect, autocompleteCaretSource, bool) {
+	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info)))
+	// During IME composition the Win32 caret often stays at the beginning of the
+	// composition string. UIA TextEditPattern exposes the active composition, so
+	// use its trailing edge before accepting the stale Win32 caret.
+	if bounds, found := automationCompositionCaret(); found && caretRectCredible(bounds, 64) {
+		return bounds, autocompleteCaretComposition, true
+	}
+	if ok != 0 {
+		if bounds, found := win32CaretScreenRectFromInfo(info); found && caretRectCredible(bounds, 64) {
+			return bounds, autocompleteCaretWin32, true
+		}
+	}
+	// Browser/Electron and other custom editors expose their caret through UIA/MSAA.
+	// COM objects are created, used and released on the same MTA thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hr, _, _ := coInitializeEx.Call(0, 0)
+	if int32(hr) >= 0 {
+		defer coUninitialize.Call()
+		if bounds, found := automationCaret(query); found && caretRectCredible(bounds, 64) {
+			return bounds, autocompleteCaretAutomation, true
+		}
+		for _, hwnd := range []uintptr{uintptr(info.HwndFocus), 0} {
+			if bounds, found := accessibleCaret(hwnd); found && caretRectCredible(bounds, 16) {
+				return bounds, autocompleteCaretAccessible, true
+			}
+		}
+	}
+	return rect{}, autocompleteCaretUnknown, false
+}
+
+func win32CaretScreenRect() (rect, bool) {
+	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info))); ok == 0 {
+		return rect{}, false
+	}
+	return win32CaretScreenRectFromInfo(info)
+}
+
+func win32CaretScreenRectFromInfo(info guiThreadInfo) (rect, bool) {
+	if info.HwndCaret == 0 || info.RcCaret.Bottom <= info.RcCaret.Top {
+		return rect{}, false
+	}
+	origin := point{X: info.RcCaret.Left, Y: info.RcCaret.Top}
+	converted, _, _ := procClientToScreen.Call(uintptr(info.HwndCaret), uintptr(unsafe.Pointer(&origin)))
+	if converted == 0 {
+		return rect{}, false
+	}
+	return rect{origin.X, origin.Y, origin.X + info.RcCaret.Right - info.RcCaret.Left, origin.Y + info.RcCaret.Bottom - info.RcCaret.Top}, true
+}
+
+func queryMovedEditorCaret(start, current rect) bool {
+	const movementTolerance int32 = 2
+	if current.Top > start.Bottom+movementTolerance || current.Bottom < start.Top-movementTolerance {
+		return true
+	}
+	return current.Left > start.Left+movementTolerance
+}
+
+func shouldApplyQueryLeftOffset(source autocompleteCaretSource, start rect, startValid bool, current rect) bool {
+	switch source {
+	case autocompleteCaretComposition:
+		return false
+	case autocompleteCaretWin32:
+		return startValid && queryMovedEditorCaret(start, current)
+	default:
+		// Accessibility/custom-editor caret sources already represent rendered text
+		// geometry (including the Kugou text-descendant fallback), so preserve the
+		// existing query-width compensation for them.
+		return true
+	}
+}
+
+func caretRectCredible(bounds rect, maxWidth int32) bool {
+	width := bounds.Right - bounds.Left
+	height := bounds.Bottom - bounds.Top
+	// Real insertion carets are narrow and roughly one text line high. Reject
+	// control/dialog rectangles returned by incomplete accessibility providers.
+	return width >= 0 && width <= maxWidth && height > 0 && height <= 256
+}
+
+// 部分内嵌网页/CEF 控件会把子元素的 UIA 坐标按窗口 DPI 再放大一次，
+// 而宿主窗口本身仍返回正确的物理屏幕坐标。只有原矩形中心已经跑出
+// 当前焦点窗口、按 DPI 反向映射后又落回窗口内时才修正，避免影响
+// 正常的 UIA provider。
+func normalizeAccessibilityRect(bounds rect) rect {
+	host, dpi, ok := focusedWindowMetrics()
+	if !ok {
+		return bounds
+	}
+	return normalizeScaledProviderRect(bounds, host, dpi)
+}
+
+func focusedWindowMetrics() (rect, uintptr, bool) {
+	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info)))
+	target := uintptr(info.HwndFocus)
+	if target == 0 {
+		target = uintptr(info.HwndActive)
+	}
+	if target == 0 {
+		target, _, _ = procGetForegroundWindow.Call()
+	}
+	if target == 0 {
+		return rect{}, 0, false
+	}
+	var host rect
+	if ok, _, _ := getWindowRect.Call(target, uintptr(unsafe.Pointer(&host))); ok == 0 || host.Right <= host.Left || host.Bottom <= host.Top {
+		return rect{}, 0, false
+	}
+	dpi, _, _ := procGetDpiForWindow.Call(target)
+	if dpi == 0 {
+		dpi = 96
+	}
+	return host, dpi, true
+}
+
+func normalizeScaledProviderRect(bounds, host rect, dpi uintptr) rect {
+	if dpi <= 96 || bounds.Right <= bounds.Left || bounds.Bottom <= bounds.Top || host.Right <= host.Left || host.Bottom <= host.Top {
+		return bounds
+	}
+	if rectCenterInside(bounds, host) {
+		return bounds
+	}
+
+	scaleDelta := func(value int32) int32 {
+		return int32(int64(value) * 96 / int64(dpi))
+	}
+	candidate := rect{
+		Left:   host.Left + scaleDelta(bounds.Left-host.Left),
+		Top:    host.Top + scaleDelta(bounds.Top-host.Top),
+		Right:  host.Left + scaleDelta(bounds.Right-host.Left),
+		Bottom: host.Top + scaleDelta(bounds.Bottom-host.Top),
+	}
+	if candidate.Right <= candidate.Left || candidate.Bottom <= candidate.Top || !rectCenterInside(candidate, host) {
+		return bounds
+	}
+	return candidate
+}
+
+func rectCenterInside(bounds, host rect) bool {
+	x := int64(bounds.Left) + int64(bounds.Right-bounds.Left)/2
+	y := int64(bounds.Top) + int64(bounds.Bottom-bounds.Top)/2
+	return x >= int64(host.Left) && x <= int64(host.Right) && y >= int64(host.Top) && y <= int64(host.Bottom)
+}
+
+func automationCompositionCaret() (rect, bool) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hr, _, _ := coInitializeEx.Call(0, 0)
+	if int32(hr) < 0 {
+		return rect{}, false
+	}
+	defer coUninitialize.Call()
+
+	var automation *caretCOM
+	hr, _, _ = coCreateInstance.Call(uintptr(unsafe.Pointer(clsidAutomation)), 0, 1, uintptr(unsafe.Pointer(iidAutomation)), uintptr(unsafe.Pointer(&automation)))
+	if int32(hr) < 0 || automation == nil {
+		return rect{}, false
+	}
+	defer automation.release()
+
+	var element *caretCOM
+	if !automation.call(8, uintptr(unsafe.Pointer(&element))) || element == nil {
+		return rect{}, false
+	}
+	defer element.release()
+
+	var pattern *caretCOM
+	if !element.call(14, 10032, uintptr(unsafe.Pointer(iidTextEdit)), uintptr(unsafe.Pointer(&pattern))) || pattern == nil {
+		return rect{}, false
+	}
+	defer pattern.release()
+
+	var textRange *caretCOM
+	// IUIAutomationTextEditPattern::GetActiveComposition is vtable slot 9.
+	if !pattern.call(9, uintptr(unsafe.Pointer(&textRange))) || textRange == nil {
+		return rect{}, false
+	}
+	defer textRange.release()
+	return textRangeCaret(textRange, true)
+}
+
+func automationCaret(query string) (rect, bool) {
 	var automation *caretCOM
 	hr, _, _ := coCreateInstance.Call(uintptr(unsafe.Pointer(clsidAutomation)), 0, 1, uintptr(unsafe.Pointer(iidAutomation)), uintptr(unsafe.Pointer(&automation)))
 	if int32(hr) < 0 || automation == nil {
@@ -113,16 +292,28 @@ func automationCaret() (rect, bool) {
 		return rect{}, false
 	}
 	defer element.release()
-	// 密码控件的 TextPattern 选择范围可能指向其他位置；优先使用 IA2 光标。
+	// Chromium/CEF 等自绘输入框往往能通过 IA2 给出字符级光标位置，
+	// 而 UIA TextPattern 在部分应用中会返回整个输入框或其他错误矩形。
 	var isPassword int32
 	var elementBounds rect
 	passwordOK := element.call(35, uintptr(unsafe.Pointer(&isPassword)))
 	boundsOK := element.call(43, uintptr(unsafe.Pointer(&elementBounds)))
-	if passwordOK && isPassword != 0 && boundsOK && elementBounds.Right > elementBounds.Left && elementBounds.Bottom > elementBounds.Top {
+	if boundsOK && elementBounds.Right > elementBounds.Left && elementBounds.Bottom > elementBounds.Top {
+		elementBounds = normalizeAccessibilityRect(elementBounds)
+		// Prefer the accessible object attached to the focused UIA element itself.
+		// Windowless embedded editors can expose IAccessibleText here even when a
+		// coordinate hit-test only returns a parent/document accessible object.
+		if caret, ok := ia2CaretFromUIAElement(element, elementBounds); ok {
+			return caret, true
+		}
 		if caret, ok := ia2CaretFromElement(elementBounds); ok {
 			return caret, true
 		}
-		return elementBounds, true
+	}
+	// 密码控件的 UIA TextPattern 选择范围尤其不可信；IA2 失败后不要再
+	// 把输入框本身或 TextPattern 返回的大矩形伪装成插入点。
+	if passwordOK && isPassword != 0 {
+		return rect{}, false
 	}
 	for _, spec := range []struct {
 		id  uintptr
@@ -138,7 +329,88 @@ func automationCaret() (rect, bool) {
 			return bounds, true
 		}
 	}
+	// Some embedded web controls expose neither TextPattern nor IA2 caret APIs,
+	// but do expose their rendered text as UIA Text descendants. Only use that
+	// geometry when ValuePattern proves the current field value ends with the
+	// exact query we just observed, so editing in the middle cannot be misplaced.
+	if boundsOK && query != "" {
+		if caret, ok := automationTextDescendantCaret(automation, element, elementBounds, query); ok {
+			return caret, true
+		}
+	}
 	return rect{}, false
+}
+
+func automationTextDescendantCaret(automation, element *caretCOM, elementBounds rect, query string) (rect, bool) {
+	if automation == nil || element == nil || query == "" {
+		return rect{}, false
+	}
+	value, ok := automationElementValue(element)
+	if !ok || !strings.HasSuffix(value, query) {
+		return rect{}, false
+	}
+
+	var walker *caretCOM
+	// IUIAutomation::get_RawViewWalker is vtable slot 16.
+	if !automation.call(16, uintptr(unsafe.Pointer(&walker))) || walker == nil {
+		return rect{}, false
+	}
+	defer walker.release()
+
+	var best rect
+	found := false
+	visited := 0
+	var walk func(*caretCOM, int)
+	walk = func(parent *caretCOM, depth int) {
+		if parent == nil || depth > 8 || visited >= 128 {
+			return
+		}
+		var child *caretCOM
+		if !walker.call(4, uintptr(unsafe.Pointer(parent)), uintptr(unsafe.Pointer(&child))) || child == nil {
+			return
+		}
+		for child != nil && visited < 128 {
+			visited++
+			var controlType int32
+			if child.call(21, uintptr(unsafe.Pointer(&controlType))) && controlType == 50020 { // UIA_TextControlTypeId
+				var bounds rect
+				if child.call(43, uintptr(unsafe.Pointer(&bounds))) {
+					bounds = normalizeAccessibilityRect(bounds)
+					if bounds.Right > bounds.Left && bounds.Bottom > bounds.Top && rectCenterInside(bounds, elementBounds) {
+						if !found || bounds.Top > best.Top || (bounds.Top == best.Top && bounds.Right > best.Right) {
+							best = bounds
+							found = true
+						}
+					}
+				}
+			}
+			walk(child, depth+1)
+			var next *caretCOM
+			walker.call(6, uintptr(unsafe.Pointer(child)), uintptr(unsafe.Pointer(&next)))
+			child.release()
+			child = next
+		}
+	}
+	walk(element, 0)
+	if !found {
+		return rect{}, false
+	}
+	return rect{Left: best.Right, Top: best.Top, Right: best.Right + 1, Bottom: best.Bottom}, true
+}
+
+func automationElementValue(element *caretCOM) (string, bool) {
+	var pattern *caretCOM
+	if !element.call(14, 10002, uintptr(unsafe.Pointer(iidValue)), uintptr(unsafe.Pointer(&pattern))) || pattern == nil {
+		return "", false
+	}
+	defer pattern.release()
+	var value uintptr
+	// IUIAutomationValuePattern::get_CurrentValue is vtable slot 4.
+	if !pattern.call(4, uintptr(unsafe.Pointer(&value))) || value == 0 {
+		return "", false
+	}
+	defer sysFreeString.Call(value)
+	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(value))), true
 }
 func patternCaret(pattern *caretCOM, text2 bool) (rect, bool) {
 	var textRange *caretCOM
@@ -170,6 +442,19 @@ func patternCaret(pattern *caretCOM, text2 bool) (rect, bool) {
 		return rect{}, false
 	}
 	defer textRange.release()
+	return textRangeCaret(textRange, false)
+}
+
+func textRangeCaret(textRange *caretCOM, collapseToEnd bool) (rect, bool) {
+	if textRange == nil {
+		return rect{}, false
+	}
+	if collapseToEnd {
+		// Move the start endpoint to the range end without changing the editor's
+		// actual selection/composition. The resulting zero-length range is the
+		// insertion point after the currently typed IME composition text.
+		textRange.call(15, 0, uintptr(unsafe.Pointer(textRange)), 1)
+	}
 	if bounds, ok := textRangeBounds(textRange); ok {
 		return bounds, true
 	}
@@ -214,7 +499,8 @@ func textRangeBounds(textRange *caretCOM) (rect, bool) {
 	if values[3] <= 0 {
 		return rect{}, false
 	}
-	return rect{int32(math.Floor(values[0])), int32(math.Floor(values[1])), int32(math.Ceil(values[0] + values[2])), int32(math.Ceil(values[1] + values[3]))}, true
+	bounds := rect{int32(math.Floor(values[0])), int32(math.Floor(values[1])), int32(math.Ceil(values[0] + values[2])), int32(math.Ceil(values[1] + values[3]))}
+	return normalizeAccessibilityRect(bounds), true
 }
 func accessibleCaret(hwnd uintptr) (rect, bool) {
 	var accessible *caretCOM
@@ -234,5 +520,9 @@ func accessibleCaret(hwnd uintptr) (rect, bool) {
 	if !accessible.call(22, uintptr(unsafe.Pointer(&x)), uintptr(unsafe.Pointer(&y)), uintptr(unsafe.Pointer(&w)), uintptr(unsafe.Pointer(&h)), uintptr(unsafe.Pointer(&child))) || h <= 0 {
 		return rect{}, false
 	}
-	return rect{x, y, x + w, y + h}, true
+	bounds := rect{x, y, x + w, y + h}
+	if !caretRectCredible(bounds, 16) {
+		return rect{}, false
+	}
+	return bounds, true
 }

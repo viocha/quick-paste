@@ -102,6 +102,26 @@ func TestMouseClickResetsPartialQuery(t *testing.T) {
 	drainActions(t, s)
 }
 
+func TestFirstPopupWaitsForTriggerKeyUp(t *testing.T) {
+	s := testInputState(t)
+	shows := 0
+	s.showView = func(SuggestionPayload) { shows++ }
+
+	s.append('a')
+	s.append('b')
+	s.appendKey('c', 'C')
+	drainActions(t, s)
+	if shows != 0 {
+		t.Fatalf("popup shown before trigger keyup: %d", shows)
+	}
+
+	s.handleKey(wmKeyUp, 'C')
+	drainActions(t, s)
+	if shows != 1 {
+		t.Fatalf("popup shows after trigger keyup = %d", shows)
+	}
+}
+
 func TestActionQueuePreservesOrderBeyondOldCapacity(t *testing.T) {
 	s := testInputState(t)
 	gate := make(chan struct{})

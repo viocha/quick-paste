@@ -38,6 +38,32 @@ func ia2CaretFromElement(bounds rect) (rect, bool) {
 	if child.vt != 3 || child.value != 0 {
 		return rect{}, false
 	}
+	return ia2CaretFromAccessible(accessible, bounds)
+}
+
+func ia2CaretFromUIAElement(element *caretCOM, bounds rect) (rect, bool) {
+	if element == nil {
+		return rect{}, false
+	}
+	var legacy *caretCOM
+	if !element.call(14, 10018, uintptr(unsafe.Pointer(iidLegacy)), uintptr(unsafe.Pointer(&legacy))) || legacy == nil {
+		return rect{}, false
+	}
+	defer legacy.release()
+
+	var accessible *caretCOM
+	// IUIAutomationLegacyIAccessiblePattern::GetIAccessible is vtable slot 26.
+	if !legacy.call(26, uintptr(unsafe.Pointer(&accessible))) || accessible == nil {
+		return rect{}, false
+	}
+	defer accessible.release()
+	return ia2CaretFromAccessible(accessible, bounds)
+}
+
+func ia2CaretFromAccessible(accessible *caretCOM, bounds rect) (rect, bool) {
+	if accessible == nil {
+		return rect{}, false
+	}
 
 	var service *caretCOM
 	if !accessible.call(0, uintptr(unsafe.Pointer(iidServiceProvider)), uintptr(unsafe.Pointer(&service))) || service == nil {
@@ -58,7 +84,7 @@ func ia2CaretFromElement(bounds rect) (rect, bool) {
 	if !text.call(6, uintptr(offset), 0, uintptr(unsafe.Pointer(&cx)), uintptr(unsafe.Pointer(&cy)), uintptr(unsafe.Pointer(&width)), uintptr(unsafe.Pointer(&height))) || height <= 0 {
 		return rect{}, false
 	}
-	caret := rect{cx, cy, cx + max(width, 1), cy + height}
+	caret := normalizeAccessibilityRect(rect{cx, cy, cx + max(width, 1), cy + height})
 	// 命中控件中的装饰按钮或其他子元素时，不使用其坐标。
 	if caret.Left < bounds.Left || caret.Left > bounds.Right || caret.Bottom <= bounds.Top || caret.Top >= bounds.Bottom {
 		return rect{}, false
