@@ -39,15 +39,19 @@ func placePopup(caret, work rect, width, height, gap int) rect {
 // placement would cross the work area, shift it only as far as necessary to
 // keep the whole window visible instead of flipping the entire panel.
 func placeFloatingPanel(anchor, work rect, width, height, gap int) rect {
-	w := min(int32(width), work.Right-work.Left)
-	h := min(int32(height), work.Bottom-work.Top)
+	g := int32(gap)
+	left, top, right, bottom := work.Left+g, work.Top+g, work.Right-g, work.Bottom-g
+	if right <= left || bottom <= top {
+		left, top, right, bottom = work.Left, work.Top, work.Right, work.Bottom
+	}
+	w := min(int32(width), right-left)
+	h := min(int32(height), bottom-top)
 	if w <= 0 || h <= 0 {
 		return work
 	}
-	g := int32(gap)
 	x := anchor.Right + g
 	y := anchor.Bottom + g
-	x = max(work.Left, min(x, work.Right-w))
-	y = max(work.Top, min(y, work.Bottom-h))
+	x = max(left, min(x, right-w))
+	y = max(top, min(y, bottom-h))
 	return rect{x, y, x + w, y + h}
 }

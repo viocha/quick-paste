@@ -431,7 +431,7 @@ export function BrowserApp() {
   }}>
     <header onPointerDown={event=>{if(event.button===0&&!(event.target as HTMLElement).closest("button,input,[data-no-drag]")){event.preventDefault();void BrowserService.BeginDrag().catch(e=>setError(String(e)))}}} className="relative grid h-9 shrink-0 cursor-move grid-cols-[1fr_auto_1fr] items-center px-1">
       <div aria-hidden="true"/>
-      <div data-no-drag className="flex h-full cursor-default items-center gap-1">
+      <div className="flex h-full items-center">
         <button onClick={()=>setTab("clipboard")} className={`rounded-md px-3 py-1 text-xs ${tab==="clipboard"?"bg-accent font-medium":"hover:bg-accent/60"}`}>剪贴板</button>
         <button onClick={()=>setTab("phrase")} className={`rounded-md px-3 py-1 text-xs ${tab==="phrase"?"bg-accent font-medium":"hover:bg-accent/60"}`}>短语</button>
       </div>

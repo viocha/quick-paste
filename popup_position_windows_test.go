@@ -48,14 +48,14 @@ func TestFloatingPanelPrefersLowerRightAndClampsAtEdges(t *testing.T) {
 	// Only 435 px remain below the pointer. The panel should use that space and
 	// shift upward by the missing 45 px, not flip completely above the pointer.
 	b = placeFloatingPanel(rect{100, 640, 101, 641}, monitor, 380, 480, 4)
-	if b.Top != 600 || b.Bottom != 1080 {
-		t.Fatalf("panel flipped instead of clamping vertically: %+v", b)
+	if b.Top != 596 || b.Bottom != 1076 {
+		t.Fatalf("panel flipped instead of clamping vertically with edge margin: %+v", b)
 	}
 
 	// Near the right edge, preserve the rightward preference and shift left only
 	// enough to keep the full panel on the monitor.
 	b = placeFloatingPanel(rect{1800, 100, 1801, 101}, monitor, 380, 480, 4)
-	if b.Left != 1540 || b.Right != 1920 {
-		t.Fatalf("panel did not clamp horizontally: %+v", b)
+	if b.Left != 1536 || b.Right != 1916 {
+		t.Fatalf("panel did not clamp horizontally with edge margin: %+v", b)
 	}
 }
