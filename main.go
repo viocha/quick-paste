@@ -28,6 +28,12 @@ func main() {
 	}
 
 	settings := &SettingsService{}
+	inputInterval, err := settings.GetInputIntervalMs()
+	if err != nil {
+		log.Printf("读取短语输入间隔失败，使用默认值: %v", err)
+	}
+	inputIntervalMillis.Store(int64(inputInterval))
+	settings.onInputIntervalChanged = func(interval int) { inputIntervalMillis.Store(int64(interval)) }
 	browser := &BrowserService{store: store}
 	phraseService := NewPhraseService(store)
 	clipboardStore, err := NewClipboardStore()

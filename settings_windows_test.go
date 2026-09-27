@@ -65,6 +65,33 @@ func TestTooltipTimeoutPersistsAndValidates(t *testing.T) {
 	}
 }
 
+func TestInputIntervalPersistsAndValidates(t *testing.T) {
+	path := fmt.Sprintf(`Software\quick-paste-input-interval-test-%d`, time.Now().UnixNano())
+	defer registry.DeleteKey(registry.CURRENT_USER, path)
+	s := &SettingsService{registryPath: path}
+	if value, err := s.GetInputIntervalMs(); err != nil || value != 0 {
+		t.Fatalf("default: %d %v", value, err)
+	}
+	changed := -1
+	s.onInputIntervalChanged = func(interval int) { changed = interval }
+	for _, interval := range []int{30, 100, maxInputIntervalMs, 0} {
+		if err := s.SetInputIntervalMs(interval); err != nil {
+			t.Fatal(err)
+		}
+		if value, err := (&SettingsService{registryPath: path}).GetInputIntervalMs(); err != nil || value != interval {
+			t.Fatalf("persisted %d: %d %v", interval, value, err)
+		}
+		if changed != interval {
+			t.Fatalf("runtime callback: %d", changed)
+		}
+	}
+	for _, interval := range []int{-1, maxInputIntervalMs + 1} {
+		if err := s.SetInputIntervalMs(interval); err == nil {
+			t.Fatalf("accepted %d", interval)
+		}
+	}
+}
+
 func TestWebViewIdleMinutesPersistsAndValidates(t *testing.T) {
 	path := fmt.Sprintf(`Software\quick-paste-webview-idle-test-%d`, time.Now().UnixNano())
 	defer registry.DeleteKey(registry.CURRENT_USER, path)

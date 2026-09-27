@@ -71,6 +71,29 @@ func TestConsecutiveCompletions(t *testing.T) {
 	}
 }
 
+func TestCompletionReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		query      string
+		content    string
+		backspaces int
+		insert     string
+	}{
+		{name: "相同前缀", query: "hel", content: "hello", insert: "lo"},
+		{name: "完整内容", query: "hello", content: "hello"},
+		{name: "不同内容", query: "addr", content: "北京市", backspaces: 4, insert: "北京市"},
+		{name: "大小写不同", query: "abc", content: "ABC done", backspaces: 3, insert: "ABC done"},
+		{name: "Unicode 前缀", query: "你好", content: "你好世界", insert: "世界"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			backspaces, insert := completionReplacement(tc.query, tc.content)
+			if backspaces != tc.backspaces || insert != tc.insert {
+				t.Fatalf("replacement = %d, %q; want %d, %q", backspaces, insert, tc.backspaces, tc.insert)
+			}
+		})
+	}
+}
+
 func TestQueuedUpdateDoesNotReshowDismissedCandidates(t *testing.T) {
 	s := testInputState(t)
 	gate := make(chan struct{})

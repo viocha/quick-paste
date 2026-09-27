@@ -9,6 +9,10 @@ export function GetAutostart(): $CancellablePromise<boolean> {
     return $Call.ByID(2783895413);
 }
 
+export function GetInputIntervalMs(): $CancellablePromise<number> {
+    return $Call.ByID(1762160649);
+}
+
 export function GetTooltipDelay(): $CancellablePromise<number> {
     return $Call.ByID(2857427794);
 }
@@ -23,6 +27,10 @@ export function GetWebViewIdleMinutes(): $CancellablePromise<number> {
 
 export function SetAutostart(enabled: boolean): $CancellablePromise<void> {
     return $Call.ByID(848055361, enabled);
+}
+
+export function SetInputIntervalMs(interval: number): $CancellablePromise<void> {
+    return $Call.ByID(4256557877, interval);
 }
 
 export function SetTooltipDelay(delay: number): $CancellablePromise<void> {

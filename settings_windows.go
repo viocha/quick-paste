@@ -25,12 +25,54 @@ const (
 	taskSchedulerFileNotFoundHResult = 0x80070002
 	defaultWebViewIdleMinutes        = 5
 	maxWebViewIdleMinutes            = 1440
+	maxInputIntervalMs               = 1000
 )
 
 type SettingsService struct {
 	registryPath                string
 	app                         *application.App
 	onWebViewIdleMinutesChanged func(int)
+	onInputIntervalChanged      func(int)
+}
+
+func (s *SettingsService) GetInputIntervalMs() (int, error) {
+	key, err := registry.OpenKey(registry.CURRENT_USER, s.preferencesPath(), registry.QUERY_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer key.Close()
+	value, _, err := key.GetIntegerValue("InputIntervalMs")
+	if errors.Is(err, registry.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if value > maxInputIntervalMs {
+		return 0, nil
+	}
+	return int(value), nil
+}
+
+func (s *SettingsService) SetInputIntervalMs(interval int) error {
+	if interval < 0 || interval > maxInputIntervalMs {
+		return fmt.Errorf("输入间隔须为 0–%d 毫秒", maxInputIntervalMs)
+	}
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, s.preferencesPath(), registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	if err := key.SetDWordValue("InputIntervalMs", uint32(interval)); err != nil {
+		return err
+	}
+	if s.onInputIntervalChanged != nil {
+		s.onInputIntervalChanged(interval)
+	}
+	return nil
 }
 
 func (s *SettingsService) preferencesPath() string {

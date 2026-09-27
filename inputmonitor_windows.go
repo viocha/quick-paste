@@ -7,14 +7,16 @@ import (
 	"log"
 	"os"
 	"runtime"
-
-	"github.com/wailsapp/wails/v3/pkg/application"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 	"unsafe"
 
+	"github.com/wailsapp/wails/v3/pkg/application"
 	"golang.org/x/sys/windows"
 )
 
@@ -70,6 +72,7 @@ const (
 )
 
 var (
+	inputIntervalMillis     atomic.Int64
 	user32                  = windows.NewLazySystemDLL("user32.dll")
 	procSetWindowsHookExW   = user32.NewProc("SetWindowsHookExW")
 	procCallNextHookEx      = user32.NewProc("CallNextHookEx")
@@ -89,6 +92,8 @@ var (
 	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
 	procSetWindowPos        = user32.NewProc("SetWindowPos")
 	procSendInput           = user32.NewProc("SendInput")
+	procGetKeyboardLayout   = user32.NewProc("GetKeyboardLayout")
+	procVkKeyScanExW        = user32.NewProc("VkKeyScanExW")
 )
 
 type kbdLLHookStruct struct {
@@ -690,8 +695,7 @@ func (s *windowsInputState) accept() {
 	s.queryStartValid = false
 	s.mu.Unlock()
 
-	backspaces := utf8.RuneCountInString(query)
-	content := item.Content
+	backspaces, content := completionReplacement(query, item.Content)
 	s.enqueue(func() {
 		s.hideView()
 		foreground, _, _ := procGetForegroundWindow.Call()
@@ -702,6 +706,13 @@ func (s *windowsInputState) accept() {
 			log.Printf("补全插入失败: %v", err)
 		}
 	})
+}
+
+func completionReplacement(query, content string) (int, string) {
+	if strings.HasPrefix(content, query) {
+		return 0, strings.TrimPrefix(content, query)
+	}
+	return utf8.RuneCountInString(query), content
 }
 
 func (s *windowsInputState) reset() {
@@ -909,12 +920,76 @@ func sendReplacement(backspaces int, text string) error {
 			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 		)
 	}
+	if interval := time.Duration(inputIntervalMillis.Load()) * time.Millisecond; interval > 0 {
+		return sendPacedReplacement(inputs, text, interval)
+	}
+	foreground, _, _ := procGetForegroundWindow.Call()
+	thread, _, _ := procGetWindowThreadProcessID.Call(foreground, 0)
+	layout, _, _ := procGetKeyboardLayout.Call(thread)
+	capsLock := capsLockOn()
+	shiftHeld := keyPressed(vkShift)
 	for _, unit := range utf16.Encode([]rune(text)) {
+		// 部分编辑器会误处理连续的 Unicode 句点及后续字符；可映射的 ASCII 按普通键发送。
+		if unit >= 0x20 && unit < 0x7f && !shiftHeld {
+			mapped, _, _ := procVkKeyScanExW.Call(uintptr(unit), layout)
+			code := uint16(mapped)
+			modifiers := byte(code >> 8)
+			if code != 0xffff && modifiers&^byte(1) == 0 {
+				shift := modifiers&1 != 0
+				if capsLock && ((unit >= 'a' && unit <= 'z') || (unit >= 'A' && unit <= 'Z')) {
+					shift = !shift
+				}
+				if shift {
+					inputs = append(inputs, keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkShift, ExtraInfo: quickPasteInputMarker}})
+				}
+				vk := uint16(code & 0xff)
+				inputs = append(inputs,
+					keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vk, ExtraInfo: quickPasteInputMarker}},
+					keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vk, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+				)
+				if shift {
+					inputs = append(inputs, keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkShift, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}})
+				}
+				continue
+			}
+		}
 		inputs = append(inputs,
 			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode, ExtraInfo: quickPasteInputMarker}},
 			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode | keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 		)
 	}
+	return sendKeyboardInputs(inputs)
+}
+
+func sendPacedReplacement(backspaces []keyboardInput, text string, interval time.Duration) error {
+	target, _, _ := procGetForegroundWindow.Call()
+	if err := sendKeyboardInputs(backspaces); err != nil {
+		return err
+	}
+	for index, ch := range []rune(text) {
+		if index > 0 {
+			time.Sleep(interval)
+		}
+		foreground, _, _ := procGetForegroundWindow.Call()
+		if foreground != target {
+			return fmt.Errorf("输入窗口已切换，已停止输入")
+		}
+		units := utf16.Encode([]rune{ch})
+		inputs := make([]keyboardInput, 0, len(units)*2)
+		for _, unit := range units {
+			inputs = append(inputs,
+				keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode, ExtraInfo: quickPasteInputMarker}},
+				keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode | keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+			)
+		}
+		if err := sendKeyboardInputs(inputs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sendKeyboardInputs(inputs []keyboardInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}

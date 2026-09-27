@@ -37,6 +37,9 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
  const [autostart,setAutostart]=useState(false)
  const [webViewIdleMinutes,setWebViewIdleMinutes]=useState(5)
  const [webViewIdleDraft,setWebViewIdleDraft]=useState("5")
+ const [inputIntervalMs,setInputIntervalMs]=useState(0)
+ const [inputIntervalDraft,setInputIntervalDraft]=useState("0")
+ const inputIntervalValid=inputIntervalDraft.trim()!==""&&Number.isInteger(Number(inputIntervalDraft))&&Number(inputIntervalDraft)>=0&&Number(inputIntervalDraft)<=1000
  const [hotkey,setHotkey]=useState("")
  const [savedHotkey,setSavedHotkey]=useState("")
  const [hotkeyError,setHotkeyError]=useState("")
@@ -66,9 +69,9 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
   if(!open)return
   let active=true
   setLoading(true);setPreview(null);setDiffOpen(false);setConfirmRestore(false);setTab("general")
-  const generalRequest=Promise.all([SettingsService.GetAutostart(),SettingsService.GetWebViewIdleMinutes(),BackupService.GetState(),BackupService.GetPassword()]).then(([enabled,idleMinutes,value,currentPassword])=>{
+  const generalRequest=Promise.all([SettingsService.GetAutostart(),SettingsService.GetWebViewIdleMinutes(),SettingsService.GetInputIntervalMs(),BackupService.GetState(),BackupService.GetPassword()]).then(([enabled,idleMinutes,intervalMs,value,currentPassword])=>{
    if(!active)return
-   setAutostart(enabled);setWebViewIdleMinutes(idleMinutes);setWebViewIdleDraft(String(idleMinutes));setState(value);setConfig({server:value.server,username:value.username,automatic:value.automatic,intervalHours:value.intervalHours});setPassword(currentPassword);setSavedPassword(currentPassword);setShowPassword(false)
+   setAutostart(enabled);setWebViewIdleMinutes(idleMinutes);setWebViewIdleDraft(String(idleMinutes));setInputIntervalMs(intervalMs);setInputIntervalDraft(String(intervalMs));setState(value);setConfig({server:value.server,username:value.username,automatic:value.automatic,intervalHours:value.intervalHours});setPassword(currentPassword);setSavedPassword(currentPassword);setShowPassword(false)
   }).catch(error=>{if(active)toast.add({type:"error",title:"操作失败",description:String(error)})})
   const hotkeyRequest=Promise.all([BrowserService.GetHotkey(),BrowserService.GetHotkeyError()]).then(([value,error])=>{if(active){setHotkey(value);setSavedHotkey(value);setHotkeyError(error)}}).catch(error=>{if(active)setHotkeyError(String(error))})
   const clipboardRequest=Promise.all([ClipboardService.GetEnabled(),BrowserService.GetClipboardHotkey(),BrowserService.GetClipboardHotkeyError(),BrowserService.GetWinVTakeover(),ClipboardService.GetLimits(),ClipboardService.GetStats()]).then(([enabled,value,error,takeover,limits,stats])=>{if(active){setClipboardEnabled(enabled);setClipboardHotkey(value);setSavedClipboardHotkey(value);setClipboardHotkeyError(error);setWinVTakeover(takeover);setClipboardLimits(limits);setSavedClipboardLimits(limits);setClipboardStats(stats)}}).catch(error=>{if(active)setClipboardHotkeyError(String(error))})
@@ -111,7 +114,21 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
           }} />
           <span className="text-xs text-muted-foreground">分钟</span>
          </div>
-        </Field>
+       </Field>
+       <Field orientation="horizontal" data-invalid={!inputIntervalValid}>
+        <FieldContent>
+         <FieldLabel htmlFor="input-interval-ms">短语输入间隔</FieldLabel>
+         <FieldDescription>0 为快速输入；输入异常时可尝试 30–100 毫秒。</FieldDescription>
+        </FieldContent>
+        <div className="flex items-center gap-2">
+         <Input id="input-interval-ms" type="number" min={0} max={1000} step={10} className="w-24" value={inputIntervalDraft} aria-invalid={!inputIntervalValid} disabled={isBusy("input-interval-ms")} onChange={event=>setInputIntervalDraft(event.target.value)} onKeyDown={event=>{if(event.key==="Enter")event.currentTarget.blur()}} onBlur={()=>{
+          if(!inputIntervalValid){setInputIntervalDraft(String(inputIntervalMs));return}
+          const next=Number(inputIntervalDraft)
+          if(next!==inputIntervalMs)void run("input-interval-ms",async()=>{try{await SettingsService.SetInputIntervalMs(next);setInputIntervalMs(next)}catch(error){setInputIntervalDraft(String(inputIntervalMs));throw error}})
+         }} />
+         <span className="text-xs text-muted-foreground">毫秒</span>
+        </div>
+       </Field>
        </FieldGroup>
       <section className="space-y-3 border-t pt-5">
        <label htmlFor="browser-hotkey" className="text-sm font-medium">短语浏览快捷键</label>
