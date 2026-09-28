@@ -244,40 +244,51 @@ func rectCenterInside(bounds, host rect) bool {
 }
 
 func automationCompositionCaret() (rect, bool) {
+	bounds, _, found := automationCompositionState()
+	return bounds, found
+}
+
+func automationCompositionActive() bool {
+	_, active, _ := automationCompositionState()
+	return active
+}
+
+func automationCompositionState() (rect, bool, bool) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	hr, _, _ := coInitializeEx.Call(0, 0)
 	if int32(hr) < 0 {
-		return rect{}, false
+		return rect{}, false, false
 	}
 	defer coUninitialize.Call()
 
 	var automation *caretCOM
 	hr, _, _ = coCreateInstance.Call(uintptr(unsafe.Pointer(clsidAutomation)), 0, 1, uintptr(unsafe.Pointer(iidAutomation)), uintptr(unsafe.Pointer(&automation)))
 	if int32(hr) < 0 || automation == nil {
-		return rect{}, false
+		return rect{}, false, false
 	}
 	defer automation.release()
 
 	var element *caretCOM
 	if !automation.call(8, uintptr(unsafe.Pointer(&element))) || element == nil {
-		return rect{}, false
+		return rect{}, false, false
 	}
 	defer element.release()
 
 	var pattern *caretCOM
 	if !element.call(14, 10032, uintptr(unsafe.Pointer(iidTextEdit)), uintptr(unsafe.Pointer(&pattern))) || pattern == nil {
-		return rect{}, false
+		return rect{}, false, false
 	}
 	defer pattern.release()
 
 	var textRange *caretCOM
 	// IUIAutomationTextEditPattern::GetActiveComposition is vtable slot 9.
 	if !pattern.call(9, uintptr(unsafe.Pointer(&textRange))) || textRange == nil {
-		return rect{}, false
+		return rect{}, false, false
 	}
 	defer textRange.release()
-	return textRangeCaret(textRange, true)
+	bounds, found := textRangeCaret(textRange, true)
+	return bounds, true, found
 }
 
 func automationCaret(query string) (rect, bool) {
@@ -412,6 +423,7 @@ func automationElementValue(element *caretCOM) (string, bool) {
 	defer sysFreeString.Call(value)
 	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(value))), true
 }
+
 func patternCaret(pattern *caretCOM, text2 bool) (rect, bool) {
 	var textRange *caretCOM
 	if text2 {

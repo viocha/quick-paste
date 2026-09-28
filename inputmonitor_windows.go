@@ -72,28 +72,32 @@ const (
 )
 
 var (
-	inputIntervalMillis     atomic.Int64
-	user32                  = windows.NewLazySystemDLL("user32.dll")
-	procSetWindowsHookExW   = user32.NewProc("SetWindowsHookExW")
-	procCallNextHookEx      = user32.NewProc("CallNextHookEx")
-	procUnhookWindowsHookEx = user32.NewProc("UnhookWindowsHookEx")
-	procGetMessageW         = user32.NewProc("GetMessageW")
-	procPostThreadMessageW  = user32.NewProc("PostThreadMessageW")
-	procGetCurrentThreadID  = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetCurrentThreadId")
-	procGetAsyncKeyState    = user32.NewProc("GetAsyncKeyState")
-	procGetKeyState         = user32.NewProc("GetKeyState")
-	procGetGUIThreadInfo    = user32.NewProc("GetGUIThreadInfo")
-	procClientToScreen      = user32.NewProc("ClientToScreen")
-	procGetForegroundWindow = user32.NewProc("GetForegroundWindow")
-	procGetDpiForWindow     = user32.NewProc("GetDpiForWindow")
-	procGetWindowLongW      = user32.NewProc("GetWindowLongW")
-	procSetWindowLongW      = user32.NewProc("SetWindowLongW")
-	procShowWindow          = user32.NewProc("ShowWindow")
-	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
-	procSetWindowPos        = user32.NewProc("SetWindowPos")
-	procSendInput           = user32.NewProc("SendInput")
-	procGetKeyboardLayout   = user32.NewProc("GetKeyboardLayout")
-	procVkKeyScanExW        = user32.NewProc("VkKeyScanExW")
+	inputIntervalMillis          atomic.Int64
+	user32                       = windows.NewLazySystemDLL("user32.dll")
+	procSetWindowsHookExW        = user32.NewProc("SetWindowsHookExW")
+	procCallNextHookEx           = user32.NewProc("CallNextHookEx")
+	procUnhookWindowsHookEx      = user32.NewProc("UnhookWindowsHookEx")
+	procGetMessageW              = user32.NewProc("GetMessageW")
+	procPostThreadMessageW       = user32.NewProc("PostThreadMessageW")
+	procGetCurrentThreadID       = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetCurrentThreadId")
+	procGetAsyncKeyState         = user32.NewProc("GetAsyncKeyState")
+	procGetKeyState              = user32.NewProc("GetKeyState")
+	procGetGUIThreadInfo         = user32.NewProc("GetGUIThreadInfo")
+	procClientToScreen           = user32.NewProc("ClientToScreen")
+	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
+	procGetDpiForWindow          = user32.NewProc("GetDpiForWindow")
+	procGetWindowLongW           = user32.NewProc("GetWindowLongW")
+	procSetWindowLongW           = user32.NewProc("SetWindowLongW")
+	procShowWindow               = user32.NewProc("ShowWindow")
+	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
+	procSetWindowPos             = user32.NewProc("SetWindowPos")
+	procSendInput                = user32.NewProc("SendInput")
+	procGetKeyboardLayout        = user32.NewProc("GetKeyboardLayout")
+	procVkKeyScanExW             = user32.NewProc("VkKeyScanExW")
+	imm32                        = windows.NewLazySystemDLL("imm32.dll")
+	procImmGetContext            = imm32.NewProc("ImmGetContext")
+	procImmGetCompositionStringW = imm32.NewProc("ImmGetCompositionStringW")
+	procImmReleaseContext        = imm32.NewProc("ImmReleaseContext")
 )
 
 type kbdLLHookStruct struct {
@@ -166,6 +170,7 @@ type windowsInputState struct {
 	closed            bool
 	lastForeground    uintptr
 	swallowKeyUp      map[uint32]bool
+	acceptOnKeyUp     bool
 	pendingPopupKeyUp map[uint32]bool
 	winVDown          bool
 	actions           chan struct{}
@@ -182,6 +187,9 @@ type windowsInputState struct {
 	showView          func(SuggestionPayload)
 	hideView          func()
 	replaceText       func(int, string) error
+	replaceIMEText    func(string) error
+	compositionActive func() bool
+	caretMoved        func(rect) (bool, bool)
 }
 
 func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
@@ -198,6 +206,12 @@ func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 	state.showView = state.showPopup
 	state.hideView = state.hidePopup
 	state.replaceText = sendReplacement
+	state.replaceIMEText = sendIMEReplacement
+	state.compositionActive = imeTextCompositionActive
+	state.caretMoved = func(start rect) (bool, bool) {
+		current, ok := win32CaretScreenRect()
+		return queryMovedEditorCaret(start, current), ok
+	}
 	go state.runActions()
 	cancelReady := m.app.Event.On("popup-ready", func(*application.CustomEvent) {
 		state.mu.Lock()
@@ -365,6 +379,7 @@ func (s *windowsInputState) handleMouseClick() {
 	s.query = ""
 	s.suggestions = nil
 	s.active = 0
+	s.acceptOnKeyUp = false
 	s.queryStartCaret = rect{}
 	s.queryStartValid = false
 	clear(s.pendingPopupKeyUp)
@@ -423,12 +438,19 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 		if swallow {
 			delete(s.swallowKeyUp, vk)
 		}
+		accept := vk == vkReturn && s.acceptOnKeyUp
+		if accept {
+			s.acceptOnKeyUp = false
+		}
 		_, pendingPopup := s.pendingPopupKeyUp[vk]
 		if pendingPopup {
 			delete(s.pendingPopupKeyUp, vk)
 		}
 		showPopup := pendingPopup && len(s.pendingPopupKeyUp) == 0 && len(s.suggestions) > 0
 		s.mu.Unlock()
+		if accept {
+			s.accept()
+		}
 		if showPopup {
 			s.updatePopup()
 		}
@@ -486,7 +508,9 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 			return true
 		case vkReturn:
 			s.markKeyUpForSwallow(vk)
-			s.accept()
+			s.mu.Lock()
+			s.acceptOnKeyUp = true
+			s.mu.Unlock()
 			return true
 		case vkEscape:
 			s.markKeyUpForSwallow(vk)
@@ -688,6 +712,7 @@ func (s *windowsInputState) accept() {
 	item := s.suggestions[s.active]
 	query := s.query
 	target := s.lastForeground
+	queryStartCaret, queryStartValid := s.queryStartCaret, s.queryStartValid
 	s.query = ""
 	s.suggestions = nil
 	s.active = 0
@@ -702,10 +727,54 @@ func (s *windowsInputState) accept() {
 		if target != 0 && foreground != target {
 			return
 		}
+		composing := s.compositionActive != nil && s.compositionActive()
+		if !composing && queryStartValid && s.caretMoved != nil {
+			moved, ok := s.caretMoved(queryStartCaret)
+			// 记事本的预编辑不进入输入框，按键期间光标保持在起点。
+			composing = ok && !moved
+		}
+		if composing {
+			// Esc 和完整文本在同一批输入事件中发送，保证先取消预编辑。
+			if s.replaceIMEText != nil {
+				if err := s.replaceIMEText(item.Content); err != nil {
+					log.Printf("补全插入失败: %v", err)
+				}
+			}
+			return
+		}
+		foreground, _, _ = procGetForegroundWindow.Call()
+		if target != 0 && foreground != target {
+			return
+		}
 		if err := s.replaceText(backspaces, content); err != nil {
 			log.Printf("补全插入失败: %v", err)
 		}
 	})
+}
+
+func imeTextCompositionActive() bool {
+	if automationCompositionActive() {
+		return true
+	}
+	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info))); ok == 0 || info.HwndFocus == 0 {
+		return false
+	}
+	hwnd := uintptr(info.HwndFocus)
+	context, _, _ := procImmGetContext.Call(hwnd)
+	if context == 0 {
+		return false
+	}
+	defer procImmReleaseContext.Call(hwnd, context)
+	const gcsCompReadStr = 0x0001
+	const gcsCompStr = 0x0008
+	for _, index := range []uintptr{gcsCompStr, gcsCompReadStr} {
+		length, _, _ := procImmGetCompositionStringW.Call(context, index, 0, 0)
+		if int32(length) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func completionReplacement(query, content string) (int, string) {
@@ -720,6 +789,7 @@ func (s *windowsInputState) reset() {
 	s.query = ""
 	s.suggestions = nil
 	s.active = 0
+	s.acceptOnKeyUp = false
 	s.queryStartCaret = rect{}
 	s.queryStartValid = false
 	clear(s.pendingPopupKeyUp)
@@ -953,6 +1023,26 @@ func sendReplacement(backspaces int, text string) error {
 				continue
 			}
 		}
+		inputs = append(inputs,
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode, ExtraInfo: quickPasteInputMarker}},
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode | keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+		)
+	}
+	return sendKeyboardInputs(inputs)
+}
+
+func sendIMEReplacement(text string) error {
+	escape := []keyboardInput{
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkEscape, ExtraInfo: quickPasteInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkEscape, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+	}
+	if interval := time.Duration(inputIntervalMillis.Load()) * time.Millisecond; interval > 0 {
+		return sendPacedReplacement(escape, text, interval)
+	}
+	units := utf16.Encode([]rune(text))
+	inputs := make([]keyboardInput, 0, len(escape)+len(units)*2)
+	inputs = append(inputs, escape...)
+	for _, unit := range units {
 		inputs = append(inputs,
 			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode, ExtraInfo: quickPasteInputMarker}},
 			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode | keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},

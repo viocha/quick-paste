@@ -71,6 +71,69 @@ func TestConsecutiveCompletions(t *testing.T) {
 	}
 }
 
+func TestEnterAcceptsAfterKeyUp(t *testing.T) {
+	s := testInputState(t)
+	for _, ch := range "abc" {
+		s.append(ch)
+	}
+	if !s.handleKey(wmKeyDown, vkReturn) {
+		t.Fatal("Enter keydown was not swallowed")
+	}
+	if s.query != "abc" || !s.acceptOnKeyUp {
+		t.Fatal("completion ran before Enter keyup")
+	}
+	if !s.handleKey(wmKeyUp, vkReturn) {
+		t.Fatal("Enter keyup was not swallowed")
+	}
+	if s.query != "" || s.acceptOnKeyUp {
+		t.Fatal("completion did not run after Enter keyup")
+	}
+	drainActions(t, s)
+}
+
+func TestCompletionReinsertsFullContentForIME(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		composing bool
+		moved     bool
+		wantIME   bool
+	}{
+		{name: "浏览器显示预编辑", composing: true, wantIME: true},
+		{name: "记事本仅显示候选", wantIME: true},
+		{name: "普通英文输入", moved: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testInputState(t)
+			s.compositionActive = func() bool { return tc.composing }
+			s.caretMoved = func(rect) (bool, bool) { return tc.moved, true }
+			usedIME := false
+			s.replaceIMEText = func(content string) error {
+				usedIME = true
+				if content != "LaiJun0805" {
+					t.Errorf("IME replacement = %q", content)
+				}
+				return nil
+			}
+			s.replaceText = func(backspaces int, content string) error {
+				if backspaces != 0 || content != "Jun0805" {
+					t.Errorf("English replacement = %d, %q", backspaces, content)
+				}
+				return nil
+			}
+			s.mu.Lock()
+			s.query = "Lai"
+			s.queryStartValid = true
+			s.suggestions = []Suggestion{{Content: "LaiJun0805"}}
+			s.mu.Unlock()
+			s.accept()
+			drainActions(t, s)
+			if usedIME != tc.wantIME {
+				t.Fatalf("IME replacement = %v; want %v", usedIME, tc.wantIME)
+			}
+		})
+	}
+}
+
 func TestCompletionReplacement(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
