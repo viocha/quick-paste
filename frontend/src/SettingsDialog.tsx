@@ -7,10 +7,11 @@ import { BackupService, SettingsService, BrowserService, ClipboardService } from
 import type { BackupConfig, BackupState, BackupPreview, ClipboardLimits, ClipboardStats } from "../bindings/quick-paste"
 import { BackupDiffDialog } from "./BackupDiffDialog"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 
 const defaults: BackupConfig = { server: "", username: "", automatic: false, intervalHours: 6 }
 const defaultClipboardLimits: ClipboardLimits = { maxItems: 10000, maxBytesMB: 64, textItemMB: 2, imageItemMB: 16 }
@@ -90,12 +91,14 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
  }
  return <>
   <Dialog open={open} onOpenChange={onOpenChange}>
-   <DialogContent className="flex h-[680px] max-h-[calc(100svh-2rem)] max-w-4xl flex-col gap-0 p-0">
-   <div className="shrink-0 border-b px-6 py-4"><DialogTitle className="text-base font-medium">设置</DialogTitle><DialogDescription className="sr-only">常规设置、WebDAV 备份与恢复</DialogDescription></div>
+   <DialogContent className="flex h-[680px] max-h-[calc(100svh-2rem)] flex-col gap-0 p-0 sm:max-w-4xl">
+   <DialogHeader className="shrink-0 border-b px-6 py-4"><DialogTitle>设置</DialogTitle><DialogDescription className="sr-only">常规设置、WebDAV 备份与恢复</DialogDescription></DialogHeader>
    <div className="flex min-h-0 flex-1">
-    <nav aria-label="设置分类" className="w-36 shrink-0 space-y-1 border-r bg-muted/30 p-2">
-     {[["general","常规"],["clipboard","剪贴板"],["webdav","WebDAV"]].map(([key,label])=><button key={key} type="button" aria-current={tab===key ? "page" : undefined} onClick={()=>setTab(key)} className={`w-full rounded-md px-3 py-2 text-left text-sm ${tab===key ? "bg-accent font-medium" : "hover:bg-accent"}`}>{label}</button>)}
-    </nav>
+    <ToggleGroup value={[tab]} multiple={false} orientation="vertical" aria-label="设置分类" className="h-full w-36 shrink-0 items-stretch justify-start gap-1 rounded-none border-r bg-muted/30 p-2" onValueChange={values=>{if(values[0])setTab(values[0])}}>
+     <ToggleGroupItem value="general" className="w-full justify-start px-3">常规</ToggleGroupItem>
+     <ToggleGroupItem value="clipboard" className="w-full justify-start px-3">剪贴板</ToggleGroupItem>
+     <ToggleGroupItem value="webdav" className="w-full justify-start px-3">WebDAV</ToggleGroupItem>
+    </ToggleGroup>
     {loading?<div className="min-w-0 flex-1"/>:<ScrollArea className="min-w-0 flex-1">
      <div className="p-6">
      {tab==="general" && <div className="space-y-7">
@@ -213,12 +216,11 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
   <BackupDiffDialog preview={preview} open={diffOpen} onOpenChange={setDiffOpen} />
   <Dialog open={confirmRestore} onOpenChange={setConfirmRestore}>
    <DialogContent>
-    <DialogTitle className="pr-8 text-base font-medium">恢复备份？</DialogTitle>
-    <DialogDescription>将覆盖本地数据。</DialogDescription>
-    <div className="flex justify-end gap-2">
+    <DialogHeader><DialogTitle>恢复备份？</DialogTitle><DialogDescription>将覆盖本地数据。</DialogDescription></DialogHeader>
+    <DialogFooter>
      <Button type="button" variant="outline" onClick={()=>setConfirmRestore(false)}>取消</Button>
      <Button type="button" disabled={isBusy("restore")} onClick={()=>void run("restore",async()=>{await BackupService.RestoreBackup();await onRestored();setPreview(null);setDiffOpen(false);setConfirmRestore(false);toast.add({type:"success",title:"恢复完成"})})}>恢复</Button>
-    </div>
+    </DialogFooter>
    </DialogContent>
   </Dialog>
  </>

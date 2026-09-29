@@ -21,7 +21,7 @@ import { Events } from "@wailsio/runtime"
 
 import { PhraseService } from "../bindings/quick-paste"
 import type { PhraseNode as BindingPhraseNode } from "../bindings/quick-paste"
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter, DialogHeader } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { SettingsDialog } from "./SettingsDialog"
@@ -564,8 +564,7 @@ function ManagerApp() {
         <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} onRestored={restored} />
         <Dialog open={moveOpen} onOpenChange={open=>{if(!moving)setMoveOpen(open)}} onOpenChangeComplete={open=>{if(!open)setMoveNode(null)}}>
           <DialogContent className="flex h-[560px] max-h-[calc(100svh-2rem)] flex-col">
-            <DialogTitle className="break-all pr-8 text-base font-medium">移动“{moveNode?.name}”</DialogTitle>
-            <DialogDescription className="sr-only">选择目标文件夹</DialogDescription>
+            <DialogHeader><DialogTitle className="break-all pr-8">移动“{moveNode?.name}”</DialogTitle><DialogDescription className="sr-only">选择目标文件夹</DialogDescription></DialogHeader>
             <ScrollArea className="min-h-0 flex-1 rounded-md border">
               <div role="tree" aria-label="目标文件夹" className="p-1">
                 <div role="treeitem" aria-expanded="true" aria-selected={moveTarget===""}>
@@ -574,10 +573,10 @@ function ManagerApp() {
                 </div>
               </div>
             </ScrollArea>
-            <div className="flex shrink-0 justify-end gap-2">
+            <DialogFooter className="shrink-0">
               <Button variant="outline" disabled={moving} onClick={()=>setMoveOpen(false)}>取消</Button>
               <Button disabled={moving || !moveNode || moveTarget===(moveNode.parentId ?? "") || !canMove(nodes,moveNode.id,moveTarget)} onClick={()=>void submitMove()}>移动</Button>
-            </div>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </SidebarProvider>

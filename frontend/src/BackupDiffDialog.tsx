@@ -5,7 +5,7 @@ import "jsondiffpatch/formatters/styles/html.css"
 import { ChevronsDownUp, ChevronsUpDown } from "lucide-react"
 import type { BackupPreview } from "../bindings/quick-paste"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import "./BackupDiffDialog.css"
@@ -50,15 +50,15 @@ export function BackupDiffDialog({preview,open,onOpenChange}: {preview:BackupPre
  },[preview,direction])
  if(!preview || !comparison)return null
  return <Dialog open={open} onOpenChange={onOpenChange}>
-  <DialogContent className="flex h-[680px] max-h-[calc(100svh-2rem)] max-w-4xl flex-col gap-0 overflow-hidden p-0">
-   <div className="flex shrink-0 items-center justify-between gap-4 border-b px-6 py-4 pr-12">
-    <DialogTitle className="text-base font-medium">差异</DialogTitle>
+  <DialogContent className="flex h-[680px] max-h-[calc(100svh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+   <DialogHeader className="flex shrink-0 flex-row items-center justify-between gap-4 border-b px-6 py-4 pr-12">
+    <DialogTitle>差异</DialogTitle>
     <DialogDescription className="sr-only">本地与云端备份差异</DialogDescription>
     <ToggleGroup value={[direction]} multiple={false} variant="outline" size="sm" spacing={0} onValueChange={values=>{const value=values[0];if(value)setDirection(value as DiffDirection)}} aria-label="差异方向">
      <ToggleGroupItem value="local-to-remote">本地 → 云端</ToggleGroupItem>
      <ToggleGroupItem value="remote-to-local">云端 → 本地</ToggleGroupItem>
     </ToggleGroup>
-   </div>
+   </DialogHeader>
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-6">
      <div className="flex shrink-0 items-center divide-x divide-border text-xs"><span className="pr-3"><span className="text-muted-foreground">新增</span> <span className="font-medium tabular-nums">{comparison.summary.added}</span></span><span className="px-3"><span className="text-muted-foreground">修改</span> <span className="font-medium tabular-nums">{comparison.summary.modified}</span></span><span className="pl-3"><span className="text-muted-foreground">删除</span> <span className="font-medium tabular-nums">{comparison.summary.deleted}</span></span></div>
     {comparison.hasChanges ? <section className="min-h-0 flex flex-1 flex-col overflow-hidden rounded-lg border bg-background">

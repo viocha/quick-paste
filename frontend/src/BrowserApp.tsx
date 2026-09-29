@@ -10,10 +10,11 @@ import { BrowserService, ClipboardService, PhraseService, type ClipboardListItem
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogTitle, DialogDescription, DialogFooter, DialogHeader } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Button } from "@/components/ui/button"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { ContextMenu, ContextMenuContent, ContextMenuGroup, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useTooltipDelay } from "./TooltipDelay"
@@ -389,8 +390,7 @@ export function BrowserApp() {
 
   const editorView=editor&&<Dialog open onOpenChange={open=>{if(!open)closeEditor()}}>
     <DialogContent className="max-h-[calc(100svh-1rem)] overflow-y-auto" finalFocus={false}>
-      <DialogTitle>{editor.id?editor.kind==="folder"?"重命名文件夹":"编辑短语":editor.kind==="folder"?"新建文件夹":"新建短语"}</DialogTitle>
-      <DialogDescription className="sr-only">设置所属文件夹、名称{editor.kind==="phrase"?"和内容":""}</DialogDescription>
+      <DialogHeader><DialogTitle>{editor.id?editor.kind==="folder"?"重命名文件夹":"编辑短语":editor.kind==="folder"?"新建文件夹":"新建短语"}</DialogTitle><DialogDescription className="sr-only">设置所属文件夹、名称{editor.kind==="phrase"?"和内容":""}</DialogDescription></DialogHeader>
       <form className="flex flex-col gap-4" onSubmit={event=>{event.preventDefault();void saveEditor()}}>
         <FieldGroup className="gap-3">
           <Field><FieldLabel htmlFor="node-folder">所属文件夹</FieldLabel>
@@ -402,20 +402,19 @@ export function BrowserApp() {
           <Field><FieldLabel htmlFor="node-name">名称</FieldLabel><Input id="node-name" autoFocus value={editor.name} onChange={e=>setEditor({...editor,name:e.target.value})}/></Field>
           {editor.kind==="phrase"&&<Field><FieldLabel htmlFor="phrase-content">内容</FieldLabel><Textarea id="phrase-content" rows={3} value={editor.content} onChange={e=>setEditor({...editor,content:e.target.value})}/></Field>}
         </FieldGroup>
-        <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={closeEditor}>取消</Button><Button type="submit" disabled={busy||!editor.name.trim()}>保存</Button></div>
+        <DialogFooter><Button type="button" variant="outline" onClick={closeEditor}>取消</Button><Button type="submit" disabled={busy||!editor.name.trim()}>保存</Button></DialogFooter>
       </form>
     </DialogContent>
   </Dialog>
 
   const moveView=<Dialog open={moveNode!==null} onOpenChange={open=>{if(!open&&!busy)setMoveNode(null)}}>
     <DialogContent className="flex h-[440px] max-h-[calc(100svh-1rem)] flex-col" finalFocus={false}>
-      <DialogTitle className="break-all pr-8">移动“{moveNode?.name}”</DialogTitle>
-      <DialogDescription className="sr-only">选择目标文件夹</DialogDescription>
+      <DialogHeader><DialogTitle className="break-all pr-8">移动“{moveNode?.name}”</DialogTitle><DialogDescription className="sr-only">选择目标文件夹</DialogDescription></DialogHeader>
       <ScrollArea className="min-h-0 flex-1 rounded-md border"><div role="tree" aria-label="目标文件夹" className="p-1"><div role="treeitem" aria-expanded="true" aria-selected={moveTarget===""}>
         <button type="button" className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-sm ${moveTarget===""?"bg-accent":"hover:bg-accent"}`} onClick={()=>setMoveTarget("")}><FolderOpenIcon className="size-4"/>根目录</button>
         {moveNode&&<PhraseDestinationTree nodes={nodes} source={moveNode.id} selected={moveTarget} onSelect={setMoveTarget}/>}
       </div></div></ScrollArea>
-      <div className="flex shrink-0 justify-end gap-2"><Button variant="outline" disabled={busy} onClick={()=>setMoveNode(null)}>取消</Button><Button disabled={busy||!moveNode||moveTarget===(moveNode.parentId??"")||!canMove(nodes,moveNode.id,moveTarget)} onClick={()=>void submitMove()}>移动</Button></div>
+      <DialogFooter className="shrink-0"><Button variant="outline" disabled={busy} onClick={()=>setMoveNode(null)}>取消</Button><Button disabled={busy||!moveNode||moveTarget===(moveNode.parentId??"")||!canMove(nodes,moveNode.id,moveTarget)} onClick={()=>void submitMove()}>移动</Button></DialogFooter>
     </DialogContent>
   </Dialog>
 
@@ -432,10 +431,12 @@ export function BrowserApp() {
     <header onPointerDown={event=>{if(event.button===0&&!(event.target as HTMLElement).closest("button,input,[data-no-drag]")){event.preventDefault();void BrowserService.BeginDrag().catch(e=>setError(String(e)))}}} className="relative grid h-9 shrink-0 cursor-move grid-cols-[1fr_auto_1fr] items-center px-1">
       <div aria-hidden="true"/>
       <div className="flex h-full items-center">
-        <button onClick={()=>setTab("clipboard")} className={`rounded-md px-3 py-1 text-xs ${tab==="clipboard"?"bg-accent font-medium":"hover:bg-accent/60"}`}>剪贴板</button>
-        <button onClick={()=>setTab("phrase")} className={`rounded-md px-3 py-1 text-xs ${tab==="phrase"?"bg-accent font-medium":"hover:bg-accent/60"}`}>短语</button>
+        <ToggleGroup value={[tab]} multiple={false} variant="outline" size="sm" spacing={0} onValueChange={values=>{if(values[0])setTab(values[0] as Tab)}} aria-label="快捷面板分类">
+          <ToggleGroupItem value="clipboard">剪贴板</ToggleGroupItem>
+          <ToggleGroupItem value="phrase">短语</ToggleGroupItem>
+        </ToggleGroup>
       </div>
-      <div className="flex justify-end"><button className={`flex size-7 items-center justify-center rounded-md hover:bg-accent ${pinned?"bg-accent text-foreground":""}`} aria-label={pinned?"取消固定":"固定快捷面板"} onClick={()=>void BrowserService.SetPinned(!pinned).then(()=>setPinned(!pinned)).catch(e=>setError(String(e)))}>{pinned?<PinOffIcon className="size-4"/>:<PinIcon className="size-4"/>}</button><button className="flex size-7 items-center justify-center rounded-md hover:bg-accent" aria-label="打开主界面" onClick={()=>void BrowserService.OpenManager()}><AppWindowIcon className="size-4"/></button><button className="flex size-7 items-center justify-center rounded-md hover:bg-accent" aria-label="关闭快捷面板" onClick={()=>void BrowserService.Hide()}><XIcon className="size-4"/></button></div>
+      <div className="flex justify-end"><Button variant="ghost" size="icon-sm" aria-label={pinned?"取消固定":"固定快捷面板"} onClick={()=>void BrowserService.SetPinned(!pinned).then(()=>setPinned(!pinned)).catch(e=>setError(String(e)))}>{pinned?<PinOffIcon/>:<PinIcon/>}</Button><Button variant="ghost" size="icon-sm" aria-label="打开主界面" onClick={()=>void BrowserService.OpenManager()}><AppWindowIcon/></Button><Button variant="ghost" size="icon-sm" aria-label="关闭快捷面板" onClick={()=>void BrowserService.Hide()}><XIcon/></Button></div>
       <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 border-b"/>
     </header>
     <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2 py-1">
