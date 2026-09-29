@@ -16,7 +16,8 @@ func testInputState(t *testing.T) *windowsInputState {
 			{ID: "abc", ParentID: "folder", Type: NodeTypePhrase, Name: "abc", Content: "completed"},
 		}}},
 		actions: make(chan struct{}, 1), done: make(chan struct{}), swallowKeyUp: make(map[uint32]bool),
-		showView: func(SuggestionPayload) {}, hideView: func() {}, replaceText: func(int, string) error { return nil },
+		showView: func(SuggestionPayload) {}, hideView: func() {},
+		replaceText: func(int, string) error { return nil }, replaceFullText: func(int, string) error { return nil },
 	}
 	go s.runActions()
 	t.Cleanup(func() { close(s.done) })
@@ -91,69 +92,58 @@ func TestEnterAcceptsAfterKeyUp(t *testing.T) {
 	drainActions(t, s)
 }
 
-func TestCompletionReinsertsFullContentForIME(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		composing bool
-		moved     bool
-		wantIME   bool
-	}{
-		{name: "浏览器显示预编辑", composing: true, wantIME: true},
-		{name: "记事本仅显示候选", wantIME: true},
-		{name: "普通英文输入", moved: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := testInputState(t)
-			s.compositionActive = func() bool { return tc.composing }
-			s.caretMoved = func(rect) (bool, bool) { return tc.moved, true }
-			usedIME := false
-			s.replaceIMEText = func(content string) error {
-				usedIME = true
-				if content != "LaiJun0805" {
-					t.Errorf("IME replacement = %q", content)
-				}
-				return nil
-			}
-			s.replaceText = func(backspaces int, content string) error {
-				if backspaces != 0 || content != "Jun0805" {
-					t.Errorf("English replacement = %d, %q", backspaces, content)
-				}
-				return nil
-			}
-			s.mu.Lock()
-			s.query = "Lai"
-			s.queryStartValid = true
-			s.suggestions = []Suggestion{{Content: "LaiJun0805"}}
-			s.mu.Unlock()
-			s.accept()
-			drainActions(t, s)
-			if usedIME != tc.wantIME {
-				t.Fatalf("IME replacement = %v; want %v", usedIME, tc.wantIME)
-			}
-		})
-	}
-}
-
-func TestCompletionReplacement(t *testing.T) {
+func TestCompletionReplacesWholePrefix(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		query      string
 		content    string
 		backspaces int
-		insert     string
 	}{
-		{name: "相同前缀", query: "hel", content: "hello", insert: "lo"},
-		{name: "完整内容", query: "hello", content: "hello"},
-		{name: "不同内容", query: "addr", content: "北京市", backspaces: 4, insert: "北京市"},
-		{name: "大小写不同", query: "abc", content: "ABC done", backspaces: 3, insert: "ABC done"},
-		{name: "Unicode 前缀", query: "你好", content: "你好世界", insert: "世界"},
+		{name: "相同前缀", query: "Lai", content: "LaiJun0805", backspaces: 3},
+		{name: "完整内容", query: "hello", content: "hello", backspaces: 5},
+		{name: "不同内容", query: "addr", content: "北京市", backspaces: 4},
+		{name: "大小写不同", query: "abc", content: "ABC done", backspaces: 3},
+		{name: "Unicode 前缀", query: "你好", content: "你好世界", backspaces: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			backspaces, insert := completionReplacement(tc.query, tc.content)
-			if backspaces != tc.backspaces || insert != tc.insert {
-				t.Fatalf("replacement = %d, %q; want %d, %q", backspaces, insert, tc.backspaces, tc.insert)
+			s := testInputState(t)
+			s.nativeInputMode = func() bool { return true }
+			s.replaceFullText = func(backspaces int, content string) error {
+				if backspaces != tc.backspaces || content != tc.content {
+					t.Errorf("replacement = %d, %q; want %d, %q", backspaces, content, tc.backspaces, tc.content)
+				}
+				return nil
 			}
+			s.query = tc.query
+			s.suggestions = []Suggestion{{Content: tc.content}}
+			s.accept()
+			drainActions(t, s)
 		})
+	}
+}
+
+func TestEnglishCompletionKeepsPrefixAfterChineseMode(t *testing.T) {
+	s := testInputState(t)
+	native := true
+	s.nativeInputMode = func() bool { return native }
+	s.replaceFullText = func(backspaces int, content string) error {
+		if backspaces != 3 || content != "LaiJun0805" {
+			t.Errorf("Chinese replacement = %d, %q", backspaces, content)
+		}
+		return nil
+	}
+	s.replaceText = func(backspaces int, content string) error {
+		if backspaces != 0 || content != "Jun0805" {
+			t.Errorf("English replacement = %d, %q", backspaces, content)
+		}
+		return nil
+	}
+	for i := 0; i < 2; i++ {
+		s.query = "Lai"
+		s.suggestions = []Suggestion{{Content: "LaiJun0805"}}
+		s.accept()
+		drainActions(t, s)
+		native = false
 	}
 }
 
@@ -172,6 +162,23 @@ func TestQueuedUpdateDoesNotReshowDismissedCandidates(t *testing.T) {
 	if shows != 0 {
 		t.Fatalf("stale popup shown %d times", shows)
 	}
+}
+
+func TestNewQueryDiscardsOldPopupPositionBeforeQueuedHide(t *testing.T) {
+	s := testInputState(t)
+	gate := make(chan struct{})
+	s.enqueue(func() { <-gate })
+	s.popupPositioned = true
+	oldVersion := s.queryVersion
+	s.reset()
+	for _, ch := range "abc" {
+		s.append(ch)
+	}
+	if s.popupPositioned || s.queryVersion == oldVersion {
+		t.Fatal("new query reused the previous popup position or generation")
+	}
+	close(gate)
+	drainActions(t, s)
 }
 
 func TestMouseClickResetsPartialQuery(t *testing.T) {

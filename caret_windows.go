@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"unicode/utf16"
 	"unsafe"
 )
 
@@ -83,6 +84,7 @@ type autocompleteCaretSource uint8
 const (
 	autocompleteCaretUnknown autocompleteCaretSource = iota
 	autocompleteCaretComposition
+	autocompleteCaretCompositionInline
 	autocompleteCaretWin32
 	autocompleteCaretAutomation
 	autocompleteCaretAccessible
@@ -101,7 +103,10 @@ func autocompleteCaretScreenAnchor(query string) (rect, autocompleteCaretSource,
 	// During IME composition the Win32 caret often stays at the beginning of the
 	// composition string. UIA TextEditPattern exposes the active composition, so
 	// use its trailing edge before accepting the stale Win32 caret.
-	if bounds, found := automationCompositionCaret(); found && caretRectCredible(bounds, 64) {
+	if bounds, inline, found := automationCompositionCaret(query); found && caretRectCredible(bounds, 64) {
+		if inline {
+			return bounds, autocompleteCaretCompositionInline, true
+		}
 		return bounds, autocompleteCaretComposition, true
 	}
 	if ok != 0 {
@@ -158,6 +163,8 @@ func queryMovedEditorCaret(start, current rect) bool {
 
 func shouldApplyQueryLeftOffset(source autocompleteCaretSource, start rect, startValid bool, current rect) bool {
 	switch source {
+	case autocompleteCaretCompositionInline:
+		return true
 	case autocompleteCaretComposition:
 		return false
 	case autocompleteCaretWin32:
@@ -243,52 +250,142 @@ func rectCenterInside(bounds, host rect) bool {
 	return x >= int64(host.Left) && x <= int64(host.Right) && y >= int64(host.Top) && y <= int64(host.Bottom)
 }
 
-func automationCompositionCaret() (rect, bool) {
-	bounds, _, found := automationCompositionState()
-	return bounds, found
+func automationCompositionCaret(query string) (rect, bool, bool) {
+	bounds, _, found, inline := automationCompositionState(query)
+	return bounds, inline, found
 }
 
-func automationCompositionActive() bool {
-	_, active, _ := automationCompositionState()
-	return active
-}
-
-func automationCompositionState() (rect, bool, bool) {
+func automationCompositionState(query string) (rect, bool, bool, bool) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	hr, _, _ := coInitializeEx.Call(0, 0)
 	if int32(hr) < 0 {
-		return rect{}, false, false
+		return rect{}, false, false, false
 	}
 	defer coUninitialize.Call()
 
 	var automation *caretCOM
 	hr, _, _ = coCreateInstance.Call(uintptr(unsafe.Pointer(clsidAutomation)), 0, 1, uintptr(unsafe.Pointer(iidAutomation)), uintptr(unsafe.Pointer(&automation)))
 	if int32(hr) < 0 || automation == nil {
-		return rect{}, false, false
+		return rect{}, false, false, false
 	}
 	defer automation.release()
 
 	var element *caretCOM
 	if !automation.call(8, uintptr(unsafe.Pointer(&element))) || element == nil {
-		return rect{}, false, false
+		return rect{}, false, false, false
 	}
 	defer element.release()
 
 	var pattern *caretCOM
 	if !element.call(14, 10032, uintptr(unsafe.Pointer(iidTextEdit)), uintptr(unsafe.Pointer(&pattern))) || pattern == nil {
-		return rect{}, false, false
+		return rect{}, false, false, false
 	}
 	defer pattern.release()
 
 	var textRange *caretCOM
 	// IUIAutomationTextEditPattern::GetActiveComposition is vtable slot 9.
 	if !pattern.call(9, uintptr(unsafe.Pointer(&textRange))) || textRange == nil {
-		return rect{}, false, false
+		return rect{}, false, false, false
 	}
 	defer textRange.release()
+	value := compositionRangeText(textRange)
+	if query != "" && value != query {
+		return rect{}, true, false, false
+	}
+	inline := compositionRangeIsInline(textRange, value)
 	bounds, found := textRangeCaret(textRange, true)
-	return bounds, true, found
+	return bounds, true, found, inline
+}
+
+func compositionRangeIsInline(textRange *caretCOM, value string) bool {
+	if value == "" {
+		return false
+	}
+	bounds, ok := textRangeBounds(textRange)
+	return ok && bounds.Right-bounds.Left > 2
+}
+
+func compositionRangeText(textRange *caretCOM) string {
+	var value uintptr
+	if !textRange.call(12, uintptr(^uint32(0)), uintptr(unsafe.Pointer(&value))) || value == 0 {
+		return ""
+	}
+	defer sysFreeString.Call(value)
+	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(value)))
+}
+
+func automationFocusedQueryVisible(query string) bool {
+	if query == "" {
+		return false
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hr, _, _ := coInitializeEx.Call(0, 0)
+	if int32(hr) < 0 {
+		return false
+	}
+	defer coUninitialize.Call()
+	var automation *caretCOM
+	hr, _, _ = coCreateInstance.Call(uintptr(unsafe.Pointer(clsidAutomation)), 0, 1, uintptr(unsafe.Pointer(iidAutomation)), uintptr(unsafe.Pointer(&automation)))
+	if int32(hr) < 0 || automation == nil {
+		return false
+	}
+	defer automation.release()
+	var element *caretCOM
+	if !automation.call(8, uintptr(unsafe.Pointer(&element))) || element == nil {
+		return false
+	}
+	defer element.release()
+	if value, ok := automationElementValue(element); ok && strings.HasSuffix(value, query) {
+		return true
+	}
+	for _, spec := range []struct {
+		id  uintptr
+		iid *windows.GUID
+	}{{10024, iidText2}, {10014, iidText}} {
+		var pattern *caretCOM
+		if !element.call(14, spec.id, uintptr(unsafe.Pointer(spec.iid)), uintptr(unsafe.Pointer(&pattern))) || pattern == nil {
+			continue
+		}
+		visible := textBeforeCaret(pattern, query) == query
+		pattern.release()
+		if visible {
+			return true
+		}
+	}
+	return false
+}
+
+func textBeforeCaret(pattern *caretCOM, query string) string {
+	var ranges *caretCOM
+	if !pattern.call(5, uintptr(unsafe.Pointer(&ranges))) || ranges == nil {
+		return ""
+	}
+	defer ranges.release()
+	var count int32
+	if !ranges.call(3, uintptr(unsafe.Pointer(&count))) || count != 1 {
+		return ""
+	}
+	var textRange *caretCOM
+	if !ranges.call(4, 0, uintptr(unsafe.Pointer(&textRange))) || textRange == nil {
+		return ""
+	}
+	defer textRange.release()
+	if !textRange.call(15, 0, uintptr(unsafe.Pointer(textRange)), 1) {
+		return ""
+	}
+	var moved int32
+	length := int32(len(utf16.Encode([]rune(query))))
+	if !textRange.call(14, 0, 0, uintptr(uint32(-length)), uintptr(unsafe.Pointer(&moved))) {
+		return ""
+	}
+	var value uintptr
+	if !textRange.call(12, uintptr(length), uintptr(unsafe.Pointer(&value))) || value == 0 {
+		return ""
+	}
+	defer sysFreeString.Call(value)
+	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(value)))
 }
 
 func automationCaret(query string) (rect, bool) {

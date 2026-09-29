@@ -72,32 +72,35 @@ const (
 )
 
 var (
-	inputIntervalMillis          atomic.Int64
-	user32                       = windows.NewLazySystemDLL("user32.dll")
-	procSetWindowsHookExW        = user32.NewProc("SetWindowsHookExW")
-	procCallNextHookEx           = user32.NewProc("CallNextHookEx")
-	procUnhookWindowsHookEx      = user32.NewProc("UnhookWindowsHookEx")
-	procGetMessageW              = user32.NewProc("GetMessageW")
-	procPostThreadMessageW       = user32.NewProc("PostThreadMessageW")
-	procGetCurrentThreadID       = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetCurrentThreadId")
-	procGetAsyncKeyState         = user32.NewProc("GetAsyncKeyState")
-	procGetKeyState              = user32.NewProc("GetKeyState")
-	procGetGUIThreadInfo         = user32.NewProc("GetGUIThreadInfo")
-	procClientToScreen           = user32.NewProc("ClientToScreen")
-	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
-	procGetDpiForWindow          = user32.NewProc("GetDpiForWindow")
-	procGetWindowLongW           = user32.NewProc("GetWindowLongW")
-	procSetWindowLongW           = user32.NewProc("SetWindowLongW")
-	procShowWindow               = user32.NewProc("ShowWindow")
-	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
-	procSetWindowPos             = user32.NewProc("SetWindowPos")
-	procSendInput                = user32.NewProc("SendInput")
-	procGetKeyboardLayout        = user32.NewProc("GetKeyboardLayout")
-	procVkKeyScanExW             = user32.NewProc("VkKeyScanExW")
-	imm32                        = windows.NewLazySystemDLL("imm32.dll")
-	procImmGetContext            = imm32.NewProc("ImmGetContext")
-	procImmGetCompositionStringW = imm32.NewProc("ImmGetCompositionStringW")
-	procImmReleaseContext        = imm32.NewProc("ImmReleaseContext")
+	inputIntervalMillis        atomic.Int64
+	user32                     = windows.NewLazySystemDLL("user32.dll")
+	procSetWindowsHookExW      = user32.NewProc("SetWindowsHookExW")
+	procCallNextHookEx         = user32.NewProc("CallNextHookEx")
+	procUnhookWindowsHookEx    = user32.NewProc("UnhookWindowsHookEx")
+	procGetMessageW            = user32.NewProc("GetMessageW")
+	procPostThreadMessageW     = user32.NewProc("PostThreadMessageW")
+	procGetCurrentThreadID     = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetCurrentThreadId")
+	procGetAsyncKeyState       = user32.NewProc("GetAsyncKeyState")
+	procGetKeyState            = user32.NewProc("GetKeyState")
+	procGetGUIThreadInfo       = user32.NewProc("GetGUIThreadInfo")
+	procClientToScreen         = user32.NewProc("ClientToScreen")
+	procGetForegroundWindow    = user32.NewProc("GetForegroundWindow")
+	procGetDpiForWindow        = user32.NewProc("GetDpiForWindow")
+	procGetWindowLongW         = user32.NewProc("GetWindowLongW")
+	procSetWindowLongW         = user32.NewProc("SetWindowLongW")
+	procShowWindow             = user32.NewProc("ShowWindow")
+	procSetForegroundWindow    = user32.NewProc("SetForegroundWindow")
+	procSetWindowPos           = user32.NewProc("SetWindowPos")
+	procSendInput              = user32.NewProc("SendInput")
+	procGetKeyboardLayout      = user32.NewProc("GetKeyboardLayout")
+	procVkKeyScanExW           = user32.NewProc("VkKeyScanExW")
+	procFindWindowExW          = user32.NewProc("FindWindowExW")
+	procIsWindowVisible        = user32.NewProc("IsWindowVisible")
+	imm32                      = windows.NewLazySystemDLL("imm32.dll")
+	procImmGetContext          = imm32.NewProc("ImmGetContext")
+	procImmGetOpenStatus       = imm32.NewProc("ImmGetOpenStatus")
+	procImmGetConversionStatus = imm32.NewProc("ImmGetConversionStatus")
+	procImmReleaseContext      = imm32.NewProc("ImmReleaseContext")
 )
 
 type kbdLLHookStruct struct {
@@ -162,6 +165,7 @@ type windowsInputState struct {
 
 	mu                sync.Mutex
 	query             string
+	queryVersion      uint64
 	suggestions       []Suggestion
 	active            int
 	threadID          uint32
@@ -187,9 +191,8 @@ type windowsInputState struct {
 	showView          func(SuggestionPayload)
 	hideView          func()
 	replaceText       func(int, string) error
-	replaceIMEText    func(string) error
-	compositionActive func() bool
-	caretMoved        func(rect) (bool, bool)
+	replaceFullText   func(int, string) error
+	nativeInputMode   func() bool
 }
 
 func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
@@ -206,12 +209,8 @@ func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 	state.showView = state.showPopup
 	state.hideView = state.hidePopup
 	state.replaceText = sendReplacement
-	state.replaceIMEText = sendIMEReplacement
-	state.compositionActive = imeTextCompositionActive
-	state.caretMoved = func(start rect) (bool, bool) {
-		current, ok := win32CaretScreenRect()
-		return queryMovedEditorCaret(start, current), ok
-	}
+	state.replaceFullText = sendFullReplacement
+	state.nativeInputMode = nativeIMEInputMode
 	go state.runActions()
 	cancelReady := m.app.Event.On("popup-ready", func(*application.CustomEvent) {
 		state.mu.Lock()
@@ -377,11 +376,13 @@ func (s *windowsInputState) handleMouseClick() {
 	s.mu.Lock()
 	visible := len(s.suggestions) > 0
 	s.query = ""
+	s.queryVersion++
 	s.suggestions = nil
 	s.active = 0
 	s.acceptOnKeyUp = false
 	s.queryStartCaret = rect{}
 	s.queryStartValid = false
+	s.popupPositioned = false
 	clear(s.pendingPopupKeyUp)
 	s.mu.Unlock()
 	if visible {
@@ -483,7 +484,7 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 			s.reset()
 		}
 	}
-	if foreground == s.managerHWND() || foreground == s.popupHWND() {
+	if foreground != 0 && (foreground == s.managerHWND() || foreground == s.popupHWND()) {
 		return false
 	}
 
@@ -630,6 +631,7 @@ func (s *windowsInputState) captureQueryStartCaret() {
 func (s *windowsInputState) appendWithKeyUp(ch rune, vk uint32) {
 	s.mu.Lock()
 	s.query += string(ch)
+	s.queryVersion++
 	query := s.query
 	s.mu.Unlock()
 	s.refresh(query, vk)
@@ -650,10 +652,12 @@ func (s *windowsInputState) backspaceWithKeyUp(vk uint32) {
 		runes = runes[:len(runes)-1]
 	}
 	s.query = string(runes)
+	s.queryVersion++
 	query := s.query
 	if query == "" {
 		s.queryStartCaret = rect{}
 		s.queryStartValid = false
+		s.popupPositioned = false
 	}
 	s.mu.Unlock()
 	s.refresh(query, vk)
@@ -712,69 +716,90 @@ func (s *windowsInputState) accept() {
 	item := s.suggestions[s.active]
 	query := s.query
 	target := s.lastForeground
-	queryStartCaret, queryStartValid := s.queryStartCaret, s.queryStartValid
 	s.query = ""
+	s.queryVersion++
 	s.suggestions = nil
 	s.active = 0
 	s.queryStartCaret = rect{}
 	s.queryStartValid = false
+	s.popupPositioned = false
 	s.mu.Unlock()
 
-	backspaces, content := completionReplacement(query, item.Content)
+	backspaces := utf8.RuneCountInString(query)
 	s.enqueue(func() {
 		s.hideView()
 		foreground, _, _ := procGetForegroundWindow.Call()
 		if target != 0 && foreground != target {
 			return
 		}
-		composing := s.compositionActive != nil && s.compositionActive()
-		if !composing && queryStartValid && s.caretMoved != nil {
-			moved, ok := s.caretMoved(queryStartCaret)
-			// 记事本的预编辑不进入输入框，按键期间光标保持在起点。
-			composing = ok && !moved
+		var err error
+		if s.nativeInputMode != nil && s.nativeInputMode() {
+			// 中文模式逐字清除预编辑，再写入完整短语。
+			err = s.replaceFullText(backspaces, item.Content)
+		} else {
+			// 英文模式保留已上屏的前缀。
+			remove, insert := completionReplacement(query, item.Content)
+			err = s.replaceText(remove, insert)
 		}
-		if composing {
-			// Esc 和完整文本在同一批输入事件中发送，保证先取消预编辑。
-			if s.replaceIMEText != nil {
-				if err := s.replaceIMEText(item.Content); err != nil {
-					log.Printf("补全插入失败: %v", err)
-				}
-			}
-			return
-		}
-		foreground, _, _ = procGetForegroundWindow.Call()
-		if target != 0 && foreground != target {
-			return
-		}
-		if err := s.replaceText(backspaces, content); err != nil {
+		if err != nil {
 			log.Printf("补全插入失败: %v", err)
 		}
 	})
 }
 
-func imeTextCompositionActive() bool {
-	if automationCompositionActive() {
-		return true
+func nativeIMEInputMode() bool {
+	if found, visible := sogouCandidateWindowState(); found {
+		return visible
 	}
 	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
-	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info))); ok == 0 || info.HwndFocus == 0 {
+	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info))); ok == 0 {
 		return false
 	}
 	hwnd := uintptr(info.HwndFocus)
 	context, _, _ := procImmGetContext.Call(hwnd)
+	if context == 0 && info.HwndActive != 0 && info.HwndActive != info.HwndFocus {
+		hwnd = uintptr(info.HwndActive)
+		context, _, _ = procImmGetContext.Call(hwnd)
+	}
 	if context == 0 {
 		return false
 	}
 	defer procImmReleaseContext.Call(hwnd, context)
-	const gcsCompReadStr = 0x0001
-	const gcsCompStr = 0x0008
-	for _, index := range []uintptr{gcsCompStr, gcsCompReadStr} {
-		length, _, _ := procImmGetCompositionStringW.Call(context, index, 0, 0)
-		if int32(length) > 0 {
-			return true
-		}
+	open, _, _ := procImmGetOpenStatus.Call(context)
+	if open == 0 {
+		return false
 	}
-	return false
+	var conversion uint32
+	status, _, _ := procImmGetConversionStatus.Call(context, uintptr(unsafe.Pointer(&conversion)), 0)
+	return status != 0 && conversion&1 != 0
+}
+
+func sogouCandidateWindowState() (bool, bool) {
+	foreground, _, _ := procGetForegroundWindow.Call()
+	if foreground == 0 {
+		return false, false
+	}
+	var targetPID uint32
+	procGetWindowThreadProcessID.Call(foreground, uintptr(unsafe.Pointer(&targetPID)))
+	if targetPID == 0 {
+		return false, false
+	}
+	className, _ := windows.UTF16PtrFromString("SoPY_Comp")
+	var previous uintptr
+	for {
+		hwnd, _, _ := procFindWindowExW.Call(0, previous, uintptr(unsafe.Pointer(className)), 0)
+		if hwnd == 0 {
+			return false, false
+		}
+		previous = hwnd
+		var pid uint32
+		procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+		if pid != targetPID {
+			continue
+		}
+		visible, _, _ := procIsWindowVisible.Call(hwnd)
+		return true, visible != 0
+	}
 }
 
 func completionReplacement(query, content string) (int, string) {
@@ -787,11 +812,13 @@ func completionReplacement(query, content string) (int, string) {
 func (s *windowsInputState) reset() {
 	s.mu.Lock()
 	s.query = ""
+	s.queryVersion++
 	s.suggestions = nil
 	s.active = 0
 	s.acceptOnKeyUp = false
 	s.queryStartCaret = rect{}
 	s.queryStartValid = false
+	s.popupPositioned = false
 	clear(s.pendingPopupKeyUp)
 	s.mu.Unlock()
 	s.updatePopup()
@@ -801,6 +828,7 @@ func (s *windowsInputState) hideSuggestions() {
 	s.mu.Lock()
 	s.suggestions = nil
 	s.active = 0
+	s.popupPositioned = false
 	clear(s.pendingPopupKeyUp)
 	s.mu.Unlock()
 	s.updatePopup()
@@ -823,6 +851,7 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 	s.mu.Lock()
 	positioned := s.popupPositioned
 	x, y, dpi := s.popupX, s.popupY, s.popupDPI
+	version := s.queryVersion
 	s.mu.Unlock()
 
 	var positionTarget uintptr
@@ -855,6 +884,9 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 		queryStartCaret, queryStartValid := s.queryStartCaret, s.queryStartValid
 		s.mu.Unlock()
 		applyLeftOffset := shouldApplyQueryLeftOffset(caretSource, queryStartCaret, queryStartValid, caret)
+		if !applyLeftOffset && automationFocusedQueryVisible(payload.Query) {
+			applyLeftOffset = true
+		}
 		if applyLeftOffset {
 			caret.Left -= int32(scaleForDPI(logicalLeftOffset, dpi))
 		}
@@ -865,6 +897,12 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 
 	popup := s.monitor.ensurePopup()
 	if popup == nil {
+		return
+	}
+	s.mu.Lock()
+	currentQuery := s.queryVersion == version && s.query == payload.Query && len(s.suggestions) > 0
+	s.mu.Unlock()
+	if !currentQuery {
 		return
 	}
 	s.render(payload)
@@ -882,6 +920,10 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 			return
 		}
 		s.mu.Lock()
+		if s.queryVersion != version || s.query != payload.Query || len(s.suggestions) == 0 {
+			s.mu.Unlock()
+			return
+		}
 		s.popupPositioned = true
 		s.popupX = x
 		s.popupY = y
@@ -1031,17 +1073,20 @@ func sendReplacement(backspaces int, text string) error {
 	return sendKeyboardInputs(inputs)
 }
 
-func sendIMEReplacement(text string) error {
-	escape := []keyboardInput{
-		{Type: inputKeyboard, Ki: keybdInput{Vk: vkEscape, ExtraInfo: quickPasteInputMarker}},
-		{Type: inputKeyboard, Ki: keybdInput{Vk: vkEscape, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+func sendFullReplacement(backspaces int, text string) error {
+	removal := make([]keyboardInput, 0, backspaces*2)
+	for i := 0; i < backspaces; i++ {
+		removal = append(removal,
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, ExtraInfo: quickPasteInputMarker}},
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+		)
 	}
 	if interval := time.Duration(inputIntervalMillis.Load()) * time.Millisecond; interval > 0 {
-		return sendPacedReplacement(escape, text, interval)
+		return sendPacedReplacement(removal, text, interval)
 	}
 	units := utf16.Encode([]rune(text))
-	inputs := make([]keyboardInput, 0, len(escape)+len(units)*2)
-	inputs = append(inputs, escape...)
+	inputs := make([]keyboardInput, 0, len(removal)+len(units)*2)
+	inputs = append(inputs, removal...)
 	for _, unit := range units {
 		inputs = append(inputs,
 			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Scan: unit, Flags: keyeventfUnicode, ExtraInfo: quickPasteInputMarker}},

@@ -40,8 +40,14 @@ func TestShouldApplyQueryLeftOffset(t *testing.T) {
 	moved := rect{Left: 128, Top: 100, Right: 129, Bottom: 120}
 	still := rect{Left: 100, Top: 100, Right: 101, Bottom: 120}
 
+	if !shouldApplyQueryLeftOffset(autocompleteCaretCompositionInline, start, false, moved) {
+		t.Fatal("visible inline composition must apply the query offset")
+	}
+	if shouldApplyQueryLeftOffset(autocompleteCaretComposition, start, true, still) {
+		t.Fatal("composition without inline characters must stay aligned with the caret")
+	}
 	if shouldApplyQueryLeftOffset(autocompleteCaretComposition, start, true, moved) {
-		t.Fatal("IME composition must not apply the 24px query offset")
+		t.Fatal("composition without inline characters must not use caret movement")
 	}
 	if shouldApplyQueryLeftOffset(autocompleteCaretWin32, start, false, moved) {
 		t.Fatal("Win32 caret without a reliable start sample must not apply the offset")
