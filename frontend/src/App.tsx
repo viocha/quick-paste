@@ -82,6 +82,17 @@ type SuggestionPayload = {
   active: number
 }
 
+const sidebarExpandedStorageKey = "quick-paste.manager.sidebar-expanded"
+
+function loadSidebarExpanded() {
+  try {
+    const value = JSON.parse(localStorage.getItem(sidebarExpandedStorageKey) ?? "[]")
+    return new Set<string>(Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [])
+  } catch {
+    return new Set<string>()
+  }
+}
+
 type TreeNodeProps = {
   node: PhraseNode
   nodes: PhraseNode[]
@@ -101,6 +112,8 @@ const TreeActions = createContext<{
   setDragged: (id: string | null) => void
   move: (id: string, target: string) => Promise<void>
   openMove: (node: PhraseNode) => void
+  expanded: Set<string>
+  setFolderOpen: (id: string, open: boolean) => void
 } | null>(null)
 
 function TreeNode({
@@ -141,7 +154,7 @@ function TreeNode({
       const id = event.dataTransfer.getData("application/x-quick-paste-node")
       actions.setDragged(null)
       if (node.type === "folder" && canMove(nodes, id, node.id)) {
-        setOpen(true); void actions.move(id, node.id)
+        actions.setFolderOpen(node.id, true); void actions.move(id, node.id)
       }
     },
   }
@@ -149,13 +162,9 @@ function TreeNode({
   const childCount = children.filter(child => child.id !== "draft").length
   const completionInherited = node.type === "folder" && hasEnabledCompletionAncestor(nodes, node)
   const [renameValue, setRenameValue] = useState(node.name)
-  const [open, setOpen] = useState(false)
+  const open = node.type === "folder" && actions.expanded.has(node.id)
   const [menuOpen, setMenuOpen] = useState(false)
   const cancelled = useRef(false)
-  useEffect(() => {
-    if (children.some((child) => child.id === editingId)) setOpen(true)
-  }, [children, editingId])
-
   useEffect(() => { setRenameValue(node.name); cancelled.current = false }, [node.name, editingId])
 
   if (editingId === node.id) {
@@ -219,7 +228,7 @@ function TreeNode({
   if (node.type === "folder") {
     return (
       <SidebarMenuItem>
-        <Collapsible open={open} onOpenChange={setOpen}>
+        <Collapsible open={open} onOpenChange={value=>actions.setFolderOpen(node.id,value)}>
           <ContextMenu onOpenChange={setMenuOpen}>
             <ContextMenuTrigger>
               <CollapsibleTrigger render={<SidebarMenuButton {...dragProps} tooltip={node.name} className={dropOver ? "bg-sidebar-accent ring-2 ring-inset ring-ring" : menuOpen ? "bg-sidebar-accent" : ""} />}>
@@ -278,6 +287,7 @@ function ManagerApp() {
   const tooltipDelay=useTooltipDelay()
   const tooltipTimeout=useTooltipTimeout()
   const [nodes, setNodes] = useState<PhraseNode[]>([])
+  const [expanded,setExpanded]=useState<Set<string>>(loadSidebarExpanded)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draftNode, setDraftNode] = useState<PhraseNode | null>(null)
@@ -316,6 +326,11 @@ function ManagerApp() {
   const reload = async (preferredId?: string) => {
     const next = (await PhraseService.ListNodes()) as PhraseNode[]
     setNodes(next)
+    const folders=new Set(next.filter(node=>node.type==="folder").map(node=>node.id))
+    setExpanded(current=>{
+      const filtered=new Set([...current].filter(id=>folders.has(id)))
+      return filtered.size===current.size?current:filtered
+    })
     const phraseId = preferredId ?? selectedId ?? null
     setSelectedId(next.some((node) => node.id === phraseId && node.type === "phrase") ? phraseId : null)
   }
@@ -325,6 +340,9 @@ function ManagerApp() {
     const cancel=Events.On("phrases-changed",()=>void reload())
     return ()=>cancel()
   }, [])
+  useEffect(()=>{
+    try{localStorage.setItem(sidebarExpandedStorageKey,JSON.stringify([...expanded]))}catch{}
+  },[expanded])
 
 
   useEffect(() => {
@@ -346,6 +364,7 @@ function ManagerApp() {
   }, [draftName, draftContent, selected?.id, selected?.name, selected?.content])
 
   const createNode = async (kind: NodeType, parentId: string) => {
+    if(parentId)setExpanded(current=>current.has(parentId)?current:new Set(current).add(parentId))
     setDraftNode({ id: "draft", parentId, type: kind, name: "", order: 0 })
     setEditingId("draft")
   }
@@ -450,14 +469,17 @@ function ManagerApp() {
   const restored = async () => {
     if(saveTimer.current) clearTimeout(saveTimer.current)
     setDraft(null);setDraftNode(null);setEditingId(null);setSelectedId(null)
-    setNodes(await PhraseService.ListNodes() as PhraseNode[])
+    const next=await PhraseService.ListNodes() as PhraseNode[]
+    setNodes(next)
+    const folders=new Set(next.filter(node=>node.type==="folder").map(node=>node.id))
+    setExpanded(current=>new Set([...current].filter(id=>folders.has(id))))
   }
   const treeNodes = draftNode ? [...nodes, draftNode] : nodes
   const roots = childNodes(treeNodes)
 
   return (
     <TooltipProvider delay={tooltipDelay} timeout={tooltipTimeout}>
-      <TreeActions.Provider value={{dragged,setDragged,move:async(id,target)=>{try{await move(id,target)}catch{}},openMove}}>
+      <TreeActions.Provider value={{dragged,setDragged,move:async(id,target)=>{try{await move(id,target)}catch{}},openMove,expanded,setFolderOpen:(id,open)=>setExpanded(current=>{if(current.has(id)===open)return current;const next=new Set(current);if(open)next.add(id);else next.delete(id);return next})}}>
       <SidebarProvider
         style={{ "--sidebar-width": "18rem" } as CSSProperties}
         className="h-svh min-h-0 overflow-hidden"

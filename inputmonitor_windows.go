@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -50,6 +51,7 @@ const (
 	vkUp      = 0x26
 	vkRight   = 0x27
 	vkDown    = 0x28
+	vkInsert  = 0x2D
 	vkDelete  = 0x2E
 	vkLWin    = 0x5B
 	vkRWin    = 0x5C
@@ -67,40 +69,48 @@ const (
 
 	swpNoActivate = 0x0010
 
-	gwlExStyle     = -20
-	wsExNoActivate = 0x08000000
+	gwlExStyle      = -20
+	wsExTransparent = 0x00000020
+	wsExLayered     = 0x00080000
+	wsExNoActivate  = 0x08000000
+	lwaAlpha        = 0x00000002
 )
 
 var (
-	inputIntervalMillis        atomic.Int64
-	user32                     = windows.NewLazySystemDLL("user32.dll")
-	procSetWindowsHookExW      = user32.NewProc("SetWindowsHookExW")
-	procCallNextHookEx         = user32.NewProc("CallNextHookEx")
-	procUnhookWindowsHookEx    = user32.NewProc("UnhookWindowsHookEx")
-	procGetMessageW            = user32.NewProc("GetMessageW")
-	procPostThreadMessageW     = user32.NewProc("PostThreadMessageW")
-	procGetCurrentThreadID     = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetCurrentThreadId")
-	procGetAsyncKeyState       = user32.NewProc("GetAsyncKeyState")
-	procGetKeyState            = user32.NewProc("GetKeyState")
-	procGetGUIThreadInfo       = user32.NewProc("GetGUIThreadInfo")
-	procClientToScreen         = user32.NewProc("ClientToScreen")
-	procGetForegroundWindow    = user32.NewProc("GetForegroundWindow")
-	procGetDpiForWindow        = user32.NewProc("GetDpiForWindow")
-	procGetWindowLongW         = user32.NewProc("GetWindowLongW")
-	procSetWindowLongW         = user32.NewProc("SetWindowLongW")
-	procShowWindow             = user32.NewProc("ShowWindow")
-	procSetForegroundWindow    = user32.NewProc("SetForegroundWindow")
-	procSetWindowPos           = user32.NewProc("SetWindowPos")
-	procSendInput              = user32.NewProc("SendInput")
-	procGetKeyboardLayout      = user32.NewProc("GetKeyboardLayout")
-	procVkKeyScanExW           = user32.NewProc("VkKeyScanExW")
-	procFindWindowExW          = user32.NewProc("FindWindowExW")
-	procIsWindowVisible        = user32.NewProc("IsWindowVisible")
-	imm32                      = windows.NewLazySystemDLL("imm32.dll")
-	procImmGetContext          = imm32.NewProc("ImmGetContext")
-	procImmGetOpenStatus       = imm32.NewProc("ImmGetOpenStatus")
-	procImmGetConversionStatus = imm32.NewProc("ImmGetConversionStatus")
-	procImmReleaseContext      = imm32.NewProc("ImmReleaseContext")
+	completionInsertIntervalMillis atomic.Int64
+	phraseInsertIntervalMillis     atomic.Int64
+	clipboardPasteMethodRuntime    atomic.Int32
+	phraseInsertMethodRuntime      atomic.Int32
+	completionInsertMethodRuntime  atomic.Int32
+	user32                         = windows.NewLazySystemDLL("user32.dll")
+	procSetWindowsHookExW          = user32.NewProc("SetWindowsHookExW")
+	procCallNextHookEx             = user32.NewProc("CallNextHookEx")
+	procUnhookWindowsHookEx        = user32.NewProc("UnhookWindowsHookEx")
+	procGetMessageW                = user32.NewProc("GetMessageW")
+	procPostThreadMessageW         = user32.NewProc("PostThreadMessageW")
+	procGetCurrentThreadID         = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetCurrentThreadId")
+	procGetAsyncKeyState           = user32.NewProc("GetAsyncKeyState")
+	procGetKeyState                = user32.NewProc("GetKeyState")
+	procGetGUIThreadInfo           = user32.NewProc("GetGUIThreadInfo")
+	procClientToScreen             = user32.NewProc("ClientToScreen")
+	procGetForegroundWindow        = user32.NewProc("GetForegroundWindow")
+	procGetDpiForWindow            = user32.NewProc("GetDpiForWindow")
+	procGetWindowLongW             = user32.NewProc("GetWindowLongW")
+	procSetWindowLongW             = user32.NewProc("SetWindowLongW")
+	procSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
+	procShowWindow                 = user32.NewProc("ShowWindow")
+	procSetForegroundWindow        = user32.NewProc("SetForegroundWindow")
+	procSetWindowPos               = user32.NewProc("SetWindowPos")
+	procSendInput                  = user32.NewProc("SendInput")
+	procGetKeyboardLayout          = user32.NewProc("GetKeyboardLayout")
+	procVkKeyScanExW               = user32.NewProc("VkKeyScanExW")
+	procFindWindowExW              = user32.NewProc("FindWindowExW")
+	procIsWindowVisible            = user32.NewProc("IsWindowVisible")
+	imm32                          = windows.NewLazySystemDLL("imm32.dll")
+	procImmGetContext              = imm32.NewProc("ImmGetContext")
+	procImmGetOpenStatus           = imm32.NewProc("ImmGetOpenStatus")
+	procImmGetConversionStatus     = imm32.NewProc("ImmGetConversionStatus")
+	procImmReleaseContext          = imm32.NewProc("ImmReleaseContext")
 )
 
 type kbdLLHookStruct struct {
@@ -459,6 +469,35 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 	}
 
 	if s.monitor != nil && s.monitor.browserOpen.Load() {
+		if vk == vkReturn && keyPressed(vkShift) {
+			s.markKeyUpForSwallow(vk)
+			return true
+		}
+		if s.monitor.browserKey != nil && !keyPressed(vkCtrl) && !keyPressed(vkMenu) && !keyPressed(vkLWin) && !keyPressed(vkRWin) {
+			key := ""
+			switch vk {
+			case vkUp:
+				key = "ArrowUp"
+			case vkDown:
+				key = "ArrowDown"
+			case vkLeft:
+				key = "ArrowLeft"
+			case vkRight:
+				key = "ArrowRight"
+			case vkReturn:
+				key = "Enter"
+			}
+			if key != "" {
+				foreground, _, _ := procGetForegroundWindow.Call()
+				var processID uint32
+				procGetWindowThreadProcessID.Call(foreground, uintptr(unsafe.Pointer(&processID)))
+				if processID != uint32(os.Getpid()) {
+					s.markKeyUpForSwallow(vk)
+					s.enqueue(func() { s.monitor.browserKey(key) })
+					return true
+				}
+			}
+		}
 		if vk == vkEscape {
 			foreground, _, _ := procGetForegroundWindow.Call()
 			var processID uint32
@@ -707,6 +746,23 @@ func (s *windowsInputState) move(delta int) {
 	s.updatePopup()
 }
 
+const (
+	runtimeInputCtrlV int32 = iota
+	runtimeInputShiftInsert
+	runtimeInputSend
+)
+
+func runtimeInputMethod(value string) int32 {
+	switch value {
+	case inputMethodSendInput:
+		return runtimeInputSend
+	case inputMethodShiftInsert:
+		return runtimeInputShiftInsert
+	default:
+		return runtimeInputCtrlV
+	}
+}
+
 func (s *windowsInputState) accept() {
 	s.mu.Lock()
 	if len(s.suggestions) == 0 || s.active < 0 || s.active >= len(s.suggestions) {
@@ -733,13 +789,23 @@ func (s *windowsInputState) accept() {
 			return
 		}
 		var err error
-		if s.nativeInputMode != nil && s.nativeInputMode() {
-			// 中文模式逐字清除预编辑，再写入完整短语。
-			err = s.replaceFullText(backspaces, item.Content)
+		native := s.nativeInputMode != nil && s.nativeInputMode()
+		method := completionInsertMethodRuntime.Load()
+		if method == runtimeInputSend {
+			if native {
+				// 中文模式逐字清除预编辑，再写入完整短语。
+				err = s.replaceFullText(backspaces, item.Content)
+			} else {
+				// 英文模式保留已上屏的前缀。
+				remove, insert := completionReplacement(query, item.Content)
+				err = s.replaceText(remove, insert)
+			}
 		} else {
-			// 英文模式保留已上屏的前缀。
-			remove, insert := completionReplacement(query, item.Content)
-			err = s.replaceText(remove, insert)
+			remove, insert := backspaces, item.Content
+			if !native {
+				remove, insert = completionReplacement(query, item.Content)
+			}
+			err = sendClipboardReplacement(remove, insert, target, method, s.monitor.writeClipboardText)
 		}
 		if err != nil {
 			log.Printf("补全插入失败: %v", err)
@@ -1025,6 +1091,45 @@ func (s *windowsInputState) managerHWND() uintptr {
 }
 
 func sendReplacement(backspaces int, text string) error {
+	return sendReplacementWithInterval(backspaces, text, time.Duration(completionInsertIntervalMillis.Load())*time.Millisecond)
+}
+
+func sendBackspaces(backspaces int) error {
+	inputs := make([]keyboardInput, 0, backspaces*2)
+	for i := 0; i < backspaces; i++ {
+		inputs = append(inputs,
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, ExtraInfo: quickPasteInputMarker}},
+			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+		)
+	}
+	return sendKeyboardInputs(inputs)
+}
+
+func sendClipboardReplacement(backspaces int, text string, target uintptr, method int32, write func(string) error) error {
+	if err := sendBackspaces(backspaces); err != nil {
+		return err
+	}
+	if text == "" {
+		return nil
+	}
+	foreground, _, _ := procGetForegroundWindow.Call()
+	if target != 0 && foreground != target {
+		return errors.New("输入窗口已切换，已停止输入")
+	}
+	if write == nil {
+		return errors.New("剪贴板服务未初始化")
+	}
+	if err := write(text); err != nil {
+		return err
+	}
+	foreground, _, _ = procGetForegroundWindow.Call()
+	if target != 0 && foreground != target {
+		return errors.New("输入窗口已切换，已停止输入")
+	}
+	return sendPasteShortcut(method)
+}
+
+func sendReplacementWithInterval(backspaces int, text string, interval time.Duration) error {
 	inputs := make([]keyboardInput, 0, backspaces*2+len(text)*2)
 	for i := 0; i < backspaces; i++ {
 		inputs = append(inputs,
@@ -1032,7 +1137,7 @@ func sendReplacement(backspaces int, text string) error {
 			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 		)
 	}
-	if interval := time.Duration(inputIntervalMillis.Load()) * time.Millisecond; interval > 0 {
+	if interval > 0 {
 		return sendPacedReplacement(inputs, text, interval)
 	}
 	foreground, _, _ := procGetForegroundWindow.Call()
@@ -1081,7 +1186,7 @@ func sendFullReplacement(backspaces int, text string) error {
 			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 		)
 	}
-	if interval := time.Duration(inputIntervalMillis.Load()) * time.Millisecond; interval > 0 {
+	if interval := time.Duration(completionInsertIntervalMillis.Load()) * time.Millisecond; interval > 0 {
 		return sendPacedReplacement(removal, text, interval)
 	}
 	units := utf16.Encode([]rune(text))

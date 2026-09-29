@@ -4,19 +4,21 @@ import "github.com/wailsapp/wails/v3/pkg/application"
 import "sync/atomic"
 
 type InputMonitor struct {
-	app              *application.App
-	store            *PhraseStore
-	managerWindow    func() *application.WebviewWindow
-	ensurePopup      func() *application.WebviewWindow
-	popupWindow      func() *application.WebviewWindow
-	releasePopup     func()
-	stopFn           func()
-	resetFn          func()
-	browserOpen      atomic.Bool
-	closeBrowser     func()
-	browserMouseDown func(uintptr)
-	takeOverWinV     func() bool
-	openClipboard    func()
+	app                *application.App
+	store              *PhraseStore
+	managerWindow      func() *application.WebviewWindow
+	ensurePopup        func() *application.WebviewWindow
+	popupWindow        func() *application.WebviewWindow
+	releasePopup       func()
+	stopFn             func()
+	resetFn            func()
+	browserOpen        atomic.Bool
+	closeBrowser       func()
+	browserMouseDown   func(uintptr)
+	browserKey         func(string)
+	takeOverWinV       func() bool
+	openClipboard      func()
+	writeClipboardText func(string) error
 }
 
 func NewInputMonitor(app *application.App, store *PhraseStore) *InputMonitor {

@@ -14,7 +14,6 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
-	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -27,7 +26,6 @@ var (
 	procAttachThreadInputBrowser      = user32.NewProc("AttachThreadInput")
 	procBringWindowToTopBrowser       = user32.NewProc("BringWindowToTop")
 	procGetWindowThreadProcessBrowser = user32.NewProc("GetWindowThreadProcessId")
-	procDwmFlush                      = windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmFlush")
 )
 
 type hotkeySpec struct {
@@ -454,22 +452,37 @@ func (s *BrowserService) ReadyToShow() {
 	application.InvokeSync(func() {
 		hwnd := uintptr(s.window.NativeWindow())
 		index := int32(gwlExStyle)
-		style, _, _ := procGetWindowLongW.Call(hwnd, uintptr(uint32(index)))
-		procSetWindowLongW.Call(hwnd, uintptr(uint32(index)), style|wsExNoActivate)
+		indexArg := uintptr(uint32(index))
+		style, _, _ := procGetWindowLongW.Call(hwnd, indexArg)
+		// Keep the browser HWND alive between openings. Hiding it with SW_HIDE
+		// lets WebView2 reuse the previous compositor surface on the next show,
+		// which exposes stale hover and tab-selection pixels. A fully transparent
+		// layered window keeps WebView2 painting while remaining invisible.
+		visibleStyle := (style | wsExLayered) &^ wsExTransparent
+		procSetWindowLongW.Call(hwnd, indexArg, visibleStyle|wsExNoActivate)
 		s.positionLocked(hwnd)
 		if !s.initialised {
 			s.window.Show()
 			s.initialised = true
 		}
+		procShowWindow.Call(hwnd, 4)
+		procSetLayeredWindowAttributes.Call(hwnd, 0, 255, lwaAlpha)
 		current, _, _ := procGetForegroundWindow.Call()
 		if current == hwnd && s.target != 0 {
 			procSetForegroundWindow.Call(s.target)
 		}
-		procShowWindow.Call(hwnd, 4)
-		procSetWindowLongW.Call(hwnd, uintptr(uint32(index)), style)
+		procSetWindowLongW.Call(hwnd, indexArg, visibleStyle&^wsExNoActivate)
 	})
 	s.showPending = false
 	s.visible = true
+}
+
+func (s *BrowserService) routeKey(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.visible && s.window != nil {
+		s.window.EmitEvent("browser-key", key)
+	}
 }
 
 func (s *BrowserService) hide() {
@@ -479,7 +492,14 @@ func (s *BrowserService) hide() {
 	s.dragSession++
 	s.monitor.browserOpen.Store(false)
 	if s.window != nil {
-		application.InvokeSync(func() { procShowWindow.Call(uintptr(s.window.NativeWindow()), 0) })
+		application.InvokeSync(func() {
+			hwnd := uintptr(s.window.NativeWindow())
+			index := int32(gwlExStyle)
+			indexArg := uintptr(uint32(index))
+			style, _, _ := procGetWindowLongW.Call(hwnd, indexArg)
+			procSetWindowLongW.Call(hwnd, indexArg, style|wsExLayered|wsExTransparent|wsExNoActivate)
+			procSetLayeredWindowAttributes.Call(hwnd, 0, 0, lwaAlpha)
+		})
 	}
 	s.visible = false
 	if s.window != nil {
@@ -648,13 +668,34 @@ func (s *BrowserService) Insert(id string) error {
 			if content == "" {
 				content = node.Name
 			}
-			if !s.pinned {
-				s.hide()
-			}
 			if err := s.restoreTargetLocked(); err != nil {
 				return err
 			}
-			if err := sendReplacement(0, content); err != nil {
+			current, _, _ := procGetForegroundWindow.Call()
+			if current != s.target {
+				return errors.New("输入窗口已切换，已取消输入")
+			}
+			method := phraseInsertMethodRuntime.Load()
+			if !s.pinned {
+				s.hide()
+			}
+			if method == runtimeInputSend {
+				if err := sendReplacementWithInterval(0, content, time.Duration(phraseInsertIntervalMillis.Load())*time.Millisecond); err != nil {
+					return fmt.Errorf("输入失败: %w", err)
+				}
+				return nil
+			}
+			if s.clipboard == nil {
+				return errors.New("剪贴板服务未初始化")
+			}
+			if err := s.clipboard.write(map[uint32][]byte{cfUnicodeText: encodeUTF16Clipboard(content)}); err != nil {
+				return fmt.Errorf("写入剪贴板失败: %w", err)
+			}
+			current, _, _ = procGetForegroundWindow.Call()
+			if current != s.target {
+				return errors.New("输入窗口已切换，已取消粘贴")
+			}
+			if err := sendPasteShortcut(method); err != nil {
 				return fmt.Errorf("输入失败: %w", err)
 			}
 			return nil
@@ -694,7 +735,7 @@ func (s *BrowserService) pasteClipboard(write func() error) error {
 	if !s.pinned {
 		s.hide()
 	}
-	return sendCtrlV()
+	return sendPasteShortcut(clipboardPasteMethodRuntime.Load())
 }
 
 func (s *BrowserService) restoreTargetLocked() error {
@@ -739,16 +780,19 @@ func restoreWindowFocus(target, targetFocus uintptr) error {
 	return errors.New("无法恢复原输入窗口，请重新打开悬浮框")
 }
 
-func sendCtrlV() error {
-	inputs := []keyboardInput{
+func sendPasteShortcut(method int32) error {
+	if method == runtimeInputShiftInsert {
+		return sendKeyboardInputs([]keyboardInput{
+			{Type: inputKeyboard, Ki: keybdInput{Vk: vkShift, ExtraInfo: quickPasteInputMarker}},
+			{Type: inputKeyboard, Ki: keybdInput{Vk: vkInsert, ExtraInfo: quickPasteInputMarker}},
+			{Type: inputKeyboard, Ki: keybdInput{Vk: vkInsert, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+			{Type: inputKeyboard, Ki: keybdInput{Vk: vkShift, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+		})
+	}
+	return sendKeyboardInputs([]keyboardInput{
 		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, ExtraInfo: quickPasteInputMarker}},
-		{Type: inputKeyboard, Ki: keybdInput{Vk: 0x56, ExtraInfo: quickPasteInputMarker}},
-		{Type: inputKeyboard, Ki: keybdInput{Vk: 0x56, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkV, ExtraInfo: quickPasteInputMarker}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkV, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 		{Type: inputKeyboard, Ki: keybdInput{Vk: vkCtrl, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
-	}
-	sent, _, err := procSendInput.Call(uintptr(len(inputs)), uintptr(unsafe.Pointer(&inputs[0])), unsafe.Sizeof(inputs[0]))
-	if sent != uintptr(len(inputs)) {
-		return fmt.Errorf("SendInput: sent %d/%d events: %v", sent, len(inputs), err)
-	}
-	return nil
+	})
 }

@@ -1,6 +1,6 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item"
-import { Kbd, KbdGroup } from "@/components/ui/kbd"
+import { Kbd } from "@/components/ui/kbd"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 
@@ -15,7 +15,6 @@ export function HelpDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           <h2 id="help-clipboard" className="px-2.5 text-sm font-medium">剪贴板</h2>
           <ItemGroup className="gap-0">
             <Item size="xs" className="py-0.5"><ItemContent><ItemTitle className="font-normal">中键</ItemTitle></ItemContent><ItemDescription>纯文本粘贴</ItemDescription></Item>
-            <Item size="xs" className="py-0.5"><ItemContent><ItemTitle className="font-normal"><KbdGroup><Kbd>Shift</Kbd><span>+</span><Kbd>Enter</Kbd></KbdGroup></ItemTitle></ItemContent><ItemDescription>纯文本粘贴</ItemDescription></Item>
             <Item size="xs" className="py-0.5"><ItemContent><ItemTitle className="font-normal">文件</ItemTitle></ItemContent><ItemDescription>仅保存路径</ItemDescription></Item>
           </ItemGroup>
         </section>

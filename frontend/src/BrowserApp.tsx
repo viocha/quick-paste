@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { DragEvent } from "react"
 import {
   AppWindowIcon, CheckIcon, ClipboardIcon, CopyIcon, FileIcon, FileTextIcon, FolderIcon, FolderOpenIcon,
@@ -29,7 +29,17 @@ const clipboardVirtualStep = 50
 const clipboardPageSize = 100
 const clipboardRowGap = 6
 const clipboardListPadding = 6
+const phraseExpandedStorageKey = "quick-paste.browser.phrase-expanded"
 const decodedClipboardIcons = new Set<string>()
+
+function loadPhraseExpanded() {
+  try {
+    const value=JSON.parse(localStorage.getItem(phraseExpandedStorageKey)??"[]")
+    return new Set<string>(Array.isArray(value)?value.filter((id):id is string=>typeof id==="string"):[])
+  } catch {
+    return new Set<string>()
+  }
+}
 
 async function preloadClipboardIcons(icons: Record<string,string|undefined>) {
   const sources=[...new Set(Object.values(icons).filter((source): source is string=>!!source&&!decodedClipboardIcons.has(source)))]
@@ -108,7 +118,7 @@ export function BrowserApp() {
   const [items,setItems]=useState<ClipboardListItem[]>([])
   const [clipboardTotal,setClipboardTotal]=useState(0)
   const [clipboardIcons,setClipboardIcons]=useState<Record<string,string|undefined>>({})
-  const [expanded,setExpanded]=useState<Set<string>>(()=>new Set())
+  const [expanded,setExpanded]=useState<Set<string>>(loadPhraseExpanded)
   const [queries,setQueries]=useState<Record<Tab,string>>({clipboard:"",phrase:""})
   const [captureEnabled,setCaptureEnabled]=useState(false)
   const [pinned,setPinned]=useState(false)
@@ -126,10 +136,21 @@ export function BrowserApp() {
   const [copiedId,setCopiedId]=useState<string|null>(null)
   const [undoVisible,setUndoVisible]=useState(false)
   const [clipboardWindowStart,setClipboardWindowStart]=useState(0)
+  const [clipboardFocusIndex,setClipboardFocusIndex]=useState<number|null>(null)
+  const clipboardFocusIndexRef=useRef<number|null>(null)
+  const [phraseFocusId,setPhraseFocusId]=useState<string|null>(null)
+  const phraseFocusIdRef=useRef<string|null>(null)
+  const [keyboardNavigation,setKeyboardNavigation]=useState(false)
+  const clipboardFocusPending=useRef(false)
   const [showRequestVersion,setShowRequestVersion]=useState(0)
+  const refreshRequestVersion=useRef(0)
   const copiedTimer=useRef<number|undefined>(undefined)
   const searchRef=useRef<HTMLInputElement>(null)
+  const browserRootRef=useRef<HTMLDivElement>(null)
   const scrollAreaRef=useRef<HTMLDivElement>(null)
+  const [pointerHoverReady,setPointerHoverReady]=useState(false)
+  const pointerHoverOrigin=useRef<{x:number;y:number}|null>(null)
+  const lastPointerScreen=useRef<{x:number;y:number}|null>(null)
   const clipboardQueryRef=useRef("")
   const clipboardSearchVersion=useRef(0)
   const clipboardLoadingMore=useRef(false)
@@ -138,17 +159,31 @@ export function BrowserApp() {
 
   const resetTransient=()=>{
     clearDetailTimer()
+    const active=document.activeElement
+    if(active instanceof HTMLElement&&browserRootRef.current?.contains(active))active.blur()
     window.clearTimeout(copiedTimer.current)
     setCopiedId(null);setUndoVisible(false);setContextId(null)
     setEditor(null);setMoveNode(null)
     setDraggedId(null);setDropTarget(null)
     setClipboardWindowStart(0)
+    setClipboardFocusIndex(null);clipboardFocusIndexRef.current=null;clipboardFocusPending.current=false
+    setPhraseFocusId(null);phraseFocusIdRef.current=null
+    setKeyboardNavigation(false)
+    setPointerHoverReady(false);pointerHoverOrigin.current=lastPointerScreen.current
     const viewport=scrollAreaRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
     if(viewport)viewport.scrollTop=0
     void BrowserService.DismissDetail()
   }
 
-  const reloadPhrases=async()=>setNodes(await PhraseService.ListNodes() ?? [])
+  const reloadPhrases=async()=>{
+    const next=await PhraseService.ListNodes() ?? []
+    setNodes(next)
+    const folders=new Set(next.filter(node=>node.type==="folder").map(node=>node.id))
+    setExpanded(current=>{
+      const filtered=new Set([...current].filter(id=>folders.has(id)))
+      return filtered.size===current.size?current:filtered
+    })
+  }
   const reloadClipboard=async(query=clipboardQueryRef.current)=>{
     const version=++clipboardSearchVersion.current
     const page=await ClipboardService.ListPage(query,0,clipboardPageSize)
@@ -163,7 +198,7 @@ export function BrowserApp() {
     setCaptureEnabled(await ClipboardService.GetEnabled())
   }
   const loadMoreClipboard=async()=>{
-    if(clipboardLoadingMore.current||items.length>=clipboardTotal)return
+    if(clipboardLoadingMore.current||items.length>=clipboardTotal)return 0
     clipboardLoadingMore.current=true
     const version=clipboardSearchVersion.current
     const offset=items.length
@@ -171,10 +206,12 @@ export function BrowserApp() {
       const page=await ClipboardService.ListPage(clipboardQueryRef.current,offset,clipboardPageSize)
       const icons=page.icons??{}
       await preloadClipboardIcons(icons)
-      if(version!==clipboardSearchVersion.current)return
-      setItems(current=>current.length===offset?[...current,...(page.items??[])]:current)
+      if(version!==clipboardSearchVersion.current)return 0
+      const incoming=page.items??[]
+      setItems(current=>current.length===offset?[...current,...incoming]:current)
       setClipboardTotal(page.total)
       if(page.icons)setClipboardIcons(current=>({...current,...icons}))
+      return incoming.length
     }finally{
       clipboardLoadingMore.current=false
     }
@@ -183,15 +220,20 @@ export function BrowserApp() {
     let active=true
     const refresh=(event?:{data?:unknown})=>{
       if(!active)return
+      const requestVersion=++refreshRequestVersion.current
       resetTransient()
       const requested=event?.data === "clipboard" ? "clipboard" : event?.data === "phrase" ? "phrase" : null
       if(requested)setTab(requested)
       setQueries({clipboard:"",phrase:""});setError("")
       const firstLoad=!loadedOnce.current
       if(firstLoad)setLoading(true)
-      else if(requested)setShowRequestVersion(current=>current+1)
       const tasks=requested==="clipboard"?[reloadClipboard("")]:requested==="phrase"?[reloadPhrases()]:[reloadPhrases(),reloadClipboard("")]
-      void Promise.all(tasks).catch(e=>active&&setError(String(e))).finally(()=>{if(active){loadedOnce.current=true;setLoading(false);if(firstLoad)setShowRequestVersion(current=>current+1)}})
+      void Promise.all(tasks).catch(e=>active&&requestVersion===refreshRequestVersion.current&&setError(String(e))).finally(()=>{
+        if(!active||requestVersion!==refreshRequestVersion.current)return
+        loadedOnce.current=true
+        setLoading(false)
+        if(requested||firstLoad)setShowRequestVersion(current=>current+1)
+      })
     }
     const changed=()=>{if(active)void reloadClipboard().catch(e=>setError(String(e)))}
     const cancelRefresh=Events.On("browser-refresh",refresh)
@@ -200,13 +242,18 @@ export function BrowserApp() {
     const cancelState=Events.On("clipboard-state-changed",changed)
     const cancelPhrases=Events.On("phrases-changed",()=>{if(active)void reloadPhrases().catch(e=>setError(String(e)))})
     const hidden=Events.On("browser-hidden",resetTransient)
+    const browserKey=Events.On("browser-key",event=>{
+      const key=event.data
+      if(typeof key==="string")browserRootRef.current?.dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true}))
+    })
     void BrowserService.GetActiveTab().then(value=>{if(active)setTab(value==="clipboard"?"clipboard":"phrase")}).catch(()=>{})
     void BrowserService.GetPinned().then(value=>{if(active)setPinned(value)}).catch(()=>{})
     refresh()
-    return ()=>{active=false;cancelRefresh();cancelTab();cancelChanged();cancelState();cancelPhrases();hidden()}
+    return ()=>{active=false;cancelRefresh();cancelTab();cancelChanged();cancelState();cancelPhrases();hidden();browserKey()}
   },[])
   useEffect(()=>{
     if(tab!=="clipboard")return
+    setClipboardFocusIndex(null);clipboardFocusIndexRef.current=null;clipboardFocusPending.current=false
     setClipboardWindowStart(0)
     const viewport=scrollAreaRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
     if(viewport)viewport.scrollTop=0
@@ -214,6 +261,9 @@ export function BrowserApp() {
     const timer=setTimeout(()=>void ClipboardService.ListPage(queries.clipboard,0,clipboardPageSize).then(async page=>{const icons=page.icons??{};await preloadClipboardIcons(icons);if(version===clipboardSearchVersion.current){setItems(page.items??[]);setClipboardTotal(page.total);setClipboardIcons(icons)}}).catch(e=>setError(String(e))),120)
     return ()=>clearTimeout(timer)
   },[queries.clipboard,tab])
+  useEffect(()=>{
+    try{localStorage.setItem(phraseExpandedStorageKey,JSON.stringify([...expanded]))}catch{}
+  },[expanded])
   useEffect(()=>()=>{window.clearTimeout(copiedTimer.current);clearDetailTimer()},[])
   useEffect(()=>{clearDetailTimer();void BrowserService.DismissDetail()},[tab,queries])
   useEffect(()=>{
@@ -301,6 +351,38 @@ export function BrowserApp() {
     return {offsets,totalHeight,start,end,visible:items.slice(start,end)}
   },[items,clipboardWindowStart])
 
+  const focusClipboardIndex=(index:number)=>{
+    const viewport=scrollAreaRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    const top=clipboardVirtual.offsets[index]
+    const bottom=top+clipboardRowHeight(items[index])
+    if(viewport){
+      if(top<viewport.scrollTop)viewport.scrollTop=top
+      else if(bottom>viewport.scrollTop+viewport.clientHeight)viewport.scrollTop=bottom-viewport.clientHeight
+    }
+    setClipboardWindowStart(Math.min(Math.floor(index/clipboardVirtualStep)*clipboardVirtualStep,Math.max(0,items.length-clipboardVirtualBatch)))
+    clipboardFocusPending.current=true
+    clipboardFocusIndexRef.current=index
+    setClipboardFocusIndex(index)
+    const target=scrollAreaRef.current?.querySelector<HTMLButtonElement>(`[data-clipboard-index="${index}"]`)
+    if(target){target.focus();clipboardFocusPending.current=false}
+  }
+  const focusPhrase=(button:HTMLButtonElement)=>{
+    const id=button.dataset.nodeId??null
+    phraseFocusIdRef.current=id
+    setPhraseFocusId(id)
+    button.focus()
+    button.scrollIntoView({block:"nearest"})
+  }
+  useLayoutEffect(()=>{
+    if(tab!=="clipboard"||clipboardFocusIndex===null||!clipboardFocusPending.current||clipboardFocusIndex>=items.length)return
+    const target=scrollAreaRef.current?.querySelector<HTMLButtonElement>(`[data-clipboard-index="${clipboardFocusIndex}"]`)
+    if(target){target.focus();clipboardFocusPending.current=false;return}
+    const viewport=scrollAreaRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    const top=clipboardVirtual.offsets[clipboardFocusIndex]
+    if(viewport)viewport.scrollTop=top
+    setClipboardWindowStart(Math.min(Math.floor(clipboardFocusIndex/clipboardVirtualStep)*clipboardVirtualStep,Math.max(0,items.length-clipboardVirtualBatch)))
+  },[tab,clipboardFocusIndex,clipboardVirtual.start,items.length])
+
   const dragProps=(node:PhraseNode)=>({
     draggable:true,
     onDragStart:(event:DragEvent<HTMLButtonElement>)=>{
@@ -362,7 +444,7 @@ export function BrowserApp() {
         return <li key={node.id}>
         <ContextMenu onOpenChange={open=>setContextId(open?node.id:null)}>
           <ContextMenuTrigger className={contextId===node.id?"rounded bg-accent":undefined}>
-            <button {...dragProps(node)} className={`flex h-7 w-full min-w-0 items-center gap-1 rounded pr-2 text-left text-xs hover:bg-accent ${dropTarget===node.id?"bg-accent ring-2 ring-inset ring-ring":""}`} style={{paddingLeft:4+depth*12}} aria-expanded={open} onClick={()=>setExpanded(current=>{const next=new Set(current);if(open)next.delete(node.id);else next.add(node.id);return next})}>
+            <button {...dragProps(node)} data-selectable="true" data-node-id={node.id} data-folder-id={node.id} className={`flex h-7 w-full min-w-0 items-center gap-1 rounded pr-2 text-left text-xs ${pointerHoverReady?"hover:bg-accent":""} focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${phraseFocusId===node.id?"bg-accent":""} ${keyboardNavigation&&phraseFocusId===node.id?"ring-2 ring-inset ring-ring":""} ${dropTarget===node.id?"bg-accent ring-2 ring-inset ring-ring":""}`} style={{paddingLeft:4+depth*12}} aria-expanded={open} onFocus={()=>{phraseFocusIdRef.current=node.id;setPhraseFocusId(node.id)}} onClick={()=>setExpanded(current=>{const next=new Set(current);if(open)next.delete(node.id);else next.add(node.id);return next})}>
               {open?<FolderOpenIcon className="size-3.5 shrink-0"/>:<FolderIcon className="size-3.5 shrink-0"/>}<span className="min-w-0 truncate">{node.name}</span>
               {node.completionEnabled&&<span className="rounded bg-primary/10 px-1 text-[9px] text-primary">补全</span>}
               {childCount>0&&<span aria-hidden="true" title={`${childCount} 个子项`} className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{childCount}</span>}
@@ -376,7 +458,7 @@ export function BrowserApp() {
       return <li key={node.id}>
        <ContextMenu onOpenChange={open=>setContextId(open?node.id:null)}>
         <ContextMenuTrigger className={contextId===node.id?"rounded bg-accent":undefined}>
-         <button {...dragProps(node)} data-selectable="true" disabled={busy} onClick={()=>void insert(node.id)} style={{paddingLeft:4+depth*12}} className="flex min-h-7 w-full min-w-0 items-center gap-1 rounded py-0.5 text-xs hover:bg-accent focus:bg-accent disabled:opacity-50">
+         <button {...dragProps(node)} data-selectable="true" data-node-id={node.id} disabled={busy} onFocus={()=>{phraseFocusIdRef.current=node.id;setPhraseFocusId(node.id)}} onClick={()=>void insert(node.id)} style={{paddingLeft:4+depth*12}} className={`flex min-h-7 w-full min-w-0 items-center gap-1 rounded py-0.5 text-xs ${pointerHoverReady?"hover:bg-accent":""} focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50 ${phraseFocusId===node.id?"bg-accent":""} ${keyboardNavigation&&phraseFocusId===node.id?"ring-2 ring-inset ring-ring":""}`}>
            <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground"/><span className="min-w-0 text-left"><span className="block truncate leading-3.5">{node.name}</span>{node.content&&<span className="block truncate text-[11px] leading-3 text-muted-foreground">{node.content.replace(/\s+/g," ")}</span>}</span>
          </button>
         </ContextMenuTrigger>
@@ -418,22 +500,78 @@ export function BrowserApp() {
     </DialogContent>
   </Dialog>
 
-  return <div className="relative flex h-svh select-none flex-col overflow-hidden border bg-popover text-popover-foreground" onKeyDown={event=>{
-    if(editor||event.nativeEvent.isComposing||event.defaultPrevented||(event.target as HTMLElement).closest('[role="menu"]'))return
+  return <div ref={browserRootRef} className="relative flex h-svh select-none flex-col overflow-hidden border bg-popover text-popover-foreground" onPointerMove={event=>{const point={x:event.screenX,y:event.screenY};lastPointerScreen.current=point;if(pointerHoverReady)return;const origin=pointerHoverOrigin.current;if(origin===null){pointerHoverOrigin.current=point;return}if(origin.x!==point.x||origin.y!==point.y)setPointerHoverReady(true)}} onPointerDownCapture={event=>{lastPointerScreen.current={x:event.screenX,y:event.screenY};setKeyboardNavigation(false)}} onMouseDownCapture={event=>{if(event.button===1)event.preventDefault()}} onKeyDown={event=>{
+    if(editor||moveNode||event.nativeEvent.isComposing||event.defaultPrevented||(event.target as HTMLElement).closest('[role="menu"]'))return
+    const active=document.activeElement as HTMLElement
     if(event.key==="ArrowDown"||event.key==="ArrowUp"){
-      const choices=Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[data-selectable="true"]'))
-      if(choices.length){event.preventDefault();const current=choices.indexOf(document.activeElement as HTMLButtonElement);const delta=event.key==="ArrowDown"?1:-1;choices[current<0?(delta>0?0:choices.length-1):(current+delta+choices.length)%choices.length].focus()}
+      setKeyboardNavigation(true)
+      if(tab==="clipboard"){
+        if(!items.length)return
+        event.preventDefault()
+        const current=clipboardFocusIndexRef.current??(active.dataset.clipboardIndex===undefined?-1:Number(active.dataset.clipboardIndex))
+        if(event.key==="ArrowUp"){
+          if(current<=0){
+            clipboardFocusIndexRef.current=null
+            clipboardFocusPending.current=false
+            setClipboardFocusIndex(null)
+            setKeyboardNavigation(false)
+            if(active.dataset.clipboardIndex!==undefined)active.blur()
+          }else{
+            focusClipboardIndex(current-1)
+          }
+        }else{
+          const next=current<0?0:current+1
+          if(next<items.length){
+            focusClipboardIndex(next)
+          }else if(items.length<clipboardTotal){
+            const targetIndex=items.length
+            void loadMoreClipboard().then(added=>{
+              if(added<=0)return
+              const loadedCount=targetIndex+added
+              const maxStart=Math.max(0,loadedCount-clipboardVirtualBatch)
+              setClipboardWindowStart(Math.min(Math.floor(targetIndex/clipboardVirtualStep)*clipboardVirtualStep,maxStart))
+              clipboardFocusPending.current=true
+              clipboardFocusIndexRef.current=targetIndex
+              setClipboardFocusIndex(targetIndex)
+            }).catch(e=>setError(String(e)))
+          }else{
+            focusClipboardIndex(items.length-1)
+          }
+        }
+      }else{
+        const choices=Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button[data-selectable="true"]:not(:disabled)'))
+        if(choices.length){event.preventDefault();const current=choices.findIndex(button=>button.dataset.nodeId===(phraseFocusIdRef.current??active.dataset.nodeId));const delta=event.key==="ArrowDown"?1:-1;focusPhrase(choices[current<0?(delta>0?0:choices.length-1):(current+delta+choices.length)%choices.length])}
+      }
       return
     }
-    if(event.key==="Enter"&&event.shiftKey){const active=document.activeElement as HTMLElement;const id=active?.dataset.clipboardId;if(id&&active.dataset.plain==="true"){event.preventDefault();void paste(id,true);return}}
+    if(tab==="phrase"&&(event.key==="ArrowRight"||event.key==="ArrowLeft")){
+      const selected=event.currentTarget.querySelector<HTMLButtonElement>(`button[data-node-id="${CSS.escape(phraseFocusIdRef.current??active.dataset.nodeId??"")}"]`)
+      const folderId=selected?.dataset.folderId
+      if(folderId){
+        event.preventDefault()
+        setExpanded(current=>{const next=new Set(current);if(event.key==="ArrowRight")next.add(folderId);else next.delete(folderId);return next})
+        return
+      }
+      if(event.key==="ArrowLeft"&&selected?.dataset.nodeId){
+        const parentId=nodes.find(node=>node.id===selected.dataset.nodeId)?.parentId
+        const parent=parentId&&event.currentTarget.querySelector<HTMLButtonElement>(`button[data-folder-id="${CSS.escape(parentId)}"]`)
+        if(parent){event.preventDefault();focusPhrase(parent);return}
+      }
+    }
+    if(event.key==="Enter"){
+      const clipboardItem=items[clipboardFocusIndexRef.current??-1]
+      if(tab==="clipboard"&&clipboardItem){event.preventDefault();void paste(clipboardItem.id);return}
+      const phraseId=phraseFocusIdRef.current
+      if(tab==="phrase"&&phraseId&&nodes.some(node=>node.id===phraseId&&node.type==="phrase")){event.preventDefault();void insert(phraseId);return}
+    }
     if(event.key==="Escape"){if(editor)closeEditor();else void BrowserService.Hide()}
   }}>
     <header onPointerDown={event=>{if(event.button===0&&!(event.target as HTMLElement).closest("button,input,[data-no-drag]")){event.preventDefault();void BrowserService.BeginDrag().catch(e=>setError(String(e)))}}} className="relative grid h-9 shrink-0 cursor-move grid-cols-[1fr_auto_1fr] items-center px-1">
       <div aria-hidden="true"/>
       <div className="flex h-full items-center">
         <ToggleGroup value={[tab]} multiple={false} variant="outline" size="sm" spacing={0} onValueChange={values=>{if(values[0])setTab(values[0] as Tab)}} aria-label="快捷面板分类">
-          <ToggleGroupItem value="clipboard">剪贴板</ToggleGroupItem>
-          <ToggleGroupItem value="phrase">短语</ToggleGroupItem>
+          <ToggleGroupItem value="clipboard" className="w-16 transition-none">剪贴板</ToggleGroupItem>
+          <ToggleGroupItem value="phrase" className="w-16 transition-none">短语</ToggleGroupItem>
         </ToggleGroup>
       </div>
       <div className="flex justify-end"><Button variant="ghost" size="icon-sm" aria-label={pinned?"取消固定":"固定快捷面板"} onClick={()=>void BrowserService.SetPinned(!pinned).then(()=>setPinned(!pinned)).catch(e=>setError(String(e)))}>{pinned?<PinOffIcon/>:<PinIcon/>}</Button><Button variant="ghost" size="icon-sm" aria-label="打开主界面" onClick={()=>void BrowserService.OpenManager()}><AppWindowIcon/></Button><Button variant="ghost" size="icon-sm" aria-label="关闭快捷面板" onClick={()=>void BrowserService.Hide()}><XIcon/></Button></div>
@@ -447,19 +585,19 @@ export function BrowserApp() {
       {loading?<div className="min-h-full flex-1"/>:tab==="phrase"?<ContextMenu><ContextMenuTrigger className={`flex flex-1 flex-col ${dropTarget===""?"bg-accent/40 ring-2 ring-inset ring-ring":""}`} onDragOver={event=>{if(!draggedId||!canMove(nodes,draggedId,""))return;event.preventDefault();event.dataTransfer.dropEffect="move";setDropTarget("")}} onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setDropTarget(current=>current===""?null:current)}} onDrop={event=>{event.preventDefault();const id=event.dataTransfer.getData("application/x-quick-paste-node")||draggedId||"";setDraggedId(null);setDropTarget(null);if(canMove(nodes,id,""))void run(()=>movePhraseNode(id,""))}}><ul className="p-0.5">{phraseResults?phraseResults.map(({node,path})=><li key={node.id}>
         <ContextMenu onOpenChange={open=>setContextId(open?node.id:null)}>
           <ContextMenuTrigger className={contextId===node.id?"rounded bg-accent":undefined}>
-            <button {...dragProps(node)} data-selectable="true" onClick={()=>void insert(node.id)} className="flex min-h-7 w-full min-w-0 items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-accent focus:bg-accent"><FileTextIcon className="size-3.5 shrink-0 text-muted-foreground"/><span className="min-w-0"><span className="block truncate text-xs leading-3.5">{node.name}</span><span className="block truncate text-[11px] leading-3 text-muted-foreground">{path}{node.content?` · ${node.content.replace(/\s+/g," ")}`:""}</span></span></button>
+            <button {...dragProps(node)} data-selectable="true" data-node-id={node.id} onFocus={()=>{phraseFocusIdRef.current=node.id;setPhraseFocusId(node.id)}} onClick={()=>void insert(node.id)} className={`flex min-h-7 w-full min-w-0 items-center gap-1 rounded px-1 py-0.5 text-left ${pointerHoverReady?"hover:bg-accent":""} focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${phraseFocusId===node.id?"bg-accent":""} ${keyboardNavigation&&phraseFocusId===node.id?"ring-2 ring-inset ring-ring":""}`}><FileTextIcon className="size-3.5 shrink-0 text-muted-foreground"/><span className="min-w-0"><span className="block truncate text-xs leading-3.5">{node.name}</span><span className="block truncate text-[11px] leading-3 text-muted-foreground">{path}{node.content?` · ${node.content.replace(/\s+/g," ")}`:""}</span></span></button>
           </ContextMenuTrigger>
           {phraseContext(node)}
         </ContextMenu>
       </li>):tree()}{(phraseResults?.length===0||(!phraseResults&&nodes.length===0))&&<p className="p-5 text-center text-xs text-muted-foreground">{queries.phrase?"没有匹配的短语":"暂无短语"}</p>}</ul></ContextMenuTrigger><ContextMenuContent finalFocus={false}><ContextMenuGroup><ContextMenuItem onClick={()=>openEditor(undefined,"","phrase")}><PlusIcon/>新建短语</ContextMenuItem><ContextMenuItem onClick={()=>openEditor(undefined,"","folder")}><FolderPlusIcon/>新建文件夹</ContextMenuItem></ContextMenuGroup></ContextMenuContent></ContextMenu>:
       <div role="listbox" className="relative min-h-full" style={{height:items.length?clipboardVirtual.totalHeight:undefined}}>{clipboardVirtual.visible.map((item,virtualIndex)=>{const index=clipboardVirtual.start+virtualIndex;return <div key={item.id} className="absolute inset-x-1.5" style={{top:clipboardVirtual.offsets[index],height:clipboardRowHeight(item)}}><ContextMenu onOpenChange={open=>setContextId(open?item.id:null)}>
         <ContextMenuTrigger className="block h-full">
-          <div className={`group relative h-full rounded-md border hover:border-border has-[:focus-visible]:bg-accent ${contextId===item.id?"border-border bg-accent":"bg-background/40 hover:bg-accent"}`} onPointerEnter={event=>{clearDetailTimer();const element=event.currentTarget;const summary=element.querySelector<HTMLElement>("[data-clipboard-summary]");const truncated=!!summary&&(summary.scrollHeight>summary.clientHeight||summary.scrollWidth>summary.clientWidth);if(item.kind!=="image"&&!truncated)return;detailTimer.current=setTimeout(()=>{detailTimer.current=null;if(element.isConnected&&element.matches(":hover")){const bounds=element.getBoundingClientRect();void BrowserService.ShowDetail(item.id,Math.round(bounds.top),Math.round(bounds.height))}},tooltipDelay)}} onPointerLeave={()=>{clearDetailTimer();void BrowserService.HideDetail(item.id)}} onPointerDown={()=>{clearDetailTimer();void BrowserService.DismissDetail()}}>
-            <button data-selectable="true" data-clipboard-id={item.id} data-plain={item.hasText?"true":"false"} onClick={()=>void paste(item.id)} onAuxClick={e=>{if(e.button===1&&item.hasText){e.preventDefault();void paste(item.id,true)}}} className="grid h-full w-full grid-rows-[16px_minmax(0,1fr)] gap-1 px-2 py-1 text-left focus-visible:bg-accent">
+          <div className={`group relative h-full rounded-md border has-[:focus-visible]:bg-accent ${pointerHoverReady?"hover:border-border":""} ${contextId===item.id||clipboardFocusIndex===index?"border-border bg-accent":`bg-background/40 ${pointerHoverReady?"hover:bg-accent":""}`} ${keyboardNavigation&&clipboardFocusIndex===index?"ring-2 ring-inset ring-ring":""}`} onPointerEnter={event=>{if(!pointerHoverReady)return;clearDetailTimer();const element=event.currentTarget;const summary=element.querySelector<HTMLElement>("[data-clipboard-summary]");const truncated=!!summary&&(summary.scrollHeight>summary.clientHeight||summary.scrollWidth>summary.clientWidth);if(item.kind!=="image"&&!truncated)return;detailTimer.current=setTimeout(()=>{detailTimer.current=null;if(element.isConnected&&element.matches(":hover")){const bounds=element.getBoundingClientRect();void BrowserService.ShowDetail(item.id,Math.round(bounds.top),Math.round(bounds.height))}},tooltipDelay)}} onPointerLeave={()=>{clearDetailTimer();void BrowserService.HideDetail(item.id)}} onPointerDown={()=>{clearDetailTimer();void BrowserService.DismissDetail()}}>
+            <button data-selectable="true" data-clipboard-id={item.id} data-clipboard-index={index} data-plain={item.hasText?"true":"false"} onFocus={()=>{clipboardFocusIndexRef.current=index;setClipboardFocusIndex(index)}} onClick={()=>void paste(item.id)} onAuxClick={e=>{if(e.button===1){e.preventDefault();if(item.hasText)void paste(item.id,true)}}} className="grid h-full w-full grid-rows-[16px_minmax(0,1fr)] gap-1 px-2 py-1 text-left focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
               <span className="flex min-w-0 items-center gap-1 overflow-hidden pr-20 text-[10px] leading-4 text-muted-foreground">{item.source&&clipboardIcons[item.source]?<img src={clipboardIcons[item.source]} alt="" decoding="sync" className="size-3 shrink-0 object-contain"/>:item.kind==="image"?<ImageIcon className="size-3 shrink-0"/>:item.kind==="files"?<FileIcon className="size-3 shrink-0"/>:item.kind==="rich"?<FileTextIcon className="size-3 shrink-0"/>:<ClipboardIcon className="size-3 shrink-0"/>}<span className="max-w-25 truncate">{item.source||"未知来源"}</span><span>·</span><time className="shrink-0">{relativeTime(item.createdAt)}</time>{item.kind==="rich"&&<><span>·</span><span className="shrink-0">富文本</span></>}{item.kind==="files"&&<><span>·</span><span className="shrink-0">文件</span></>}{item.kind==="image"&&item.preview!=="图片"&&<><span>·</span><span className="shrink-0">{item.preview.replace(/^图片\s*/,"")}</span></>}{item.pinned&&<PinIcon className="size-2.5 shrink-0"/>}</span>
               <span data-clipboard-summary className="line-clamp-2 min-h-0 overflow-hidden break-all text-xs leading-4">{item.kind==="image"?<ClipboardThumbnail id={item.id}/>:item.preview}</span>
             </button>
-            <span className="absolute right-1 top-0.5 hidden gap-0.5 group-hover:flex group-has-[:focus-visible]:flex">
+            <span className={`absolute right-1 top-0.5 hidden gap-0.5 group-has-[:focus-visible]:flex ${pointerHoverReady?"group-hover:flex":""}`}>
               <Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-xs" className="size-5 text-muted-foreground hover:!bg-foreground/10 hover:text-foreground" aria-label={copiedId===item.id?"已复制":"复制"} onClick={()=>void copyClipboardItem(item.id)}/>}>{copiedId===item.id?<CheckIcon/>:<CopyIcon/>}</TooltipTrigger><TooltipContent>{copiedId===item.id?"已复制":"复制"}</TooltipContent></Tooltip>
               <Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-xs" className="size-5 text-muted-foreground hover:!bg-foreground/10 hover:text-foreground" aria-label={item.pinned?"取消置顶":"置顶"} onClick={()=>void run(async()=>{await ClipboardService.TogglePinned(item.id);await reloadClipboard()})}/>}>{item.pinned?<PinOffIcon/>:<PinIcon/>}</TooltipTrigger><TooltipContent>{item.pinned?"取消置顶":"置顶"}</TooltipContent></Tooltip>
               <Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-xs" className="size-5 text-muted-foreground hover:!bg-foreground/10 hover:text-foreground" aria-label="删除" onClick={()=>void run(async()=>{await ClipboardService.Delete(item.id);setUndoVisible(true);window.setTimeout(()=>setUndoVisible(false),8000);await reloadClipboard()})}/> }><Trash2Icon/></TooltipTrigger><TooltipContent>删除</TooltipContent></Tooltip>

@@ -28,12 +28,39 @@ func main() {
 	}
 
 	settings := &SettingsService{}
-	inputInterval, err := settings.GetInputIntervalMs()
+	completionInterval, err := settings.GetCompletionInsertIntervalMs()
 	if err != nil {
-		log.Printf("读取短语输入间隔失败，使用默认值: %v", err)
+		log.Printf("读取短语补全输入间隔失败，使用默认值: %v", err)
 	}
-	inputIntervalMillis.Store(int64(inputInterval))
-	settings.onInputIntervalChanged = func(interval int) { inputIntervalMillis.Store(int64(interval)) }
+	phraseInterval, err := settings.GetPhraseInsertIntervalMs()
+	if err != nil {
+		log.Printf("读取短语插入输入间隔失败，使用默认值: %v", err)
+	}
+	clipboardMethod, err := settings.GetClipboardPasteMethod()
+	if err != nil {
+		log.Printf("读取剪贴板粘贴方式失败，使用默认值: %v", err)
+		clipboardMethod = inputMethodCtrlV
+	}
+	phraseMethod, err := settings.GetPhraseInsertMethod()
+	if err != nil {
+		log.Printf("读取短语插入方式失败，使用默认值: %v", err)
+		phraseMethod = inputMethodCtrlV
+	}
+	completionMethod, err := settings.GetCompletionInsertMethod()
+	if err != nil {
+		log.Printf("读取短语补全方式失败，使用默认值: %v", err)
+		completionMethod = inputMethodCtrlV
+	}
+	completionInsertIntervalMillis.Store(int64(completionInterval))
+	phraseInsertIntervalMillis.Store(int64(phraseInterval))
+	clipboardPasteMethodRuntime.Store(runtimeInputMethod(clipboardMethod))
+	phraseInsertMethodRuntime.Store(runtimeInputMethod(phraseMethod))
+	completionInsertMethodRuntime.Store(runtimeInputMethod(completionMethod))
+	settings.onCompletionInsertIntervalChanged = func(interval int) { completionInsertIntervalMillis.Store(int64(interval)) }
+	settings.onPhraseInsertIntervalChanged = func(interval int) { phraseInsertIntervalMillis.Store(int64(interval)) }
+	settings.onClipboardPasteMethodChanged = func(value string) { clipboardPasteMethodRuntime.Store(runtimeInputMethod(value)) }
+	settings.onPhraseInsertMethodChanged = func(value string) { phraseInsertMethodRuntime.Store(runtimeInputMethod(value)) }
+	settings.onCompletionInsertMethodChanged = func(value string) { completionInsertMethodRuntime.Store(runtimeInputMethod(value)) }
 	browser := &BrowserService{store: store}
 	phraseService := NewPhraseService(store)
 	clipboardStore, err := NewClipboardStore()
@@ -194,8 +221,12 @@ func main() {
 	browser.monitor = monitor
 	monitor.closeBrowser = browser.Hide
 	monitor.browserMouseDown = browser.mouseDown
+	monitor.browserKey = browser.routeKey
 	monitor.takeOverWinV = browser.GetWinVTakeover
 	monitor.openClipboard = func() { browser.toggle("clipboard") }
+	monitor.writeClipboardText = func(text string) error {
+		return clipboard.write(map[uint32][]byte{cfUnicodeText: encodeUTF16Clipboard(text)})
+	}
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		backup.start()
 		if err := monitor.Start(); err != nil {
