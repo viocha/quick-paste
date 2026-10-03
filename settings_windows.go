@@ -23,7 +23,7 @@ const (
 	taskCreateOrUpdate               = 6
 	taskLogonNone                    = 0
 	taskSchedulerFileNotFoundHResult = 0x80070002
-	defaultWebViewIdleMinutes        = 5
+	defaultWebViewIdleMinutes        = 60
 	maxWebViewIdleMinutes            = 1440
 	maxInsertIntervalMs              = 1000
 	inputMethodCtrlV                 = "ctrl-v"

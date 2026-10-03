@@ -39,8 +39,8 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
  const [tab,setTab]=useState("general")
  const [loading,setLoading]=useState(true)
  const [autostart,setAutostart]=useState(false)
- const [webViewIdleMinutes,setWebViewIdleMinutes]=useState(5)
- const [webViewIdleDraft,setWebViewIdleDraft]=useState("5")
+ const [webViewIdleMinutes,setWebViewIdleMinutes]=useState(60)
+ const [webViewIdleDraft,setWebViewIdleDraft]=useState("60")
  const [phraseInsertMethod,setPhraseInsertMethod]=useState("ctrl-v")
  const [phraseInsertIntervalMs,setPhraseInsertIntervalMs]=useState(0)
  const [phraseInsertIntervalDraft,setPhraseInsertIntervalDraft]=useState("0")
@@ -116,7 +116,7 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
         <Field orientation="horizontal" data-invalid={webViewIdleDraft.trim()==="" || !Number.isInteger(Number(webViewIdleDraft)) || Number(webViewIdleDraft)<1 || Number(webViewIdleDraft)>1440}>
          <FieldContent>
           <FieldLabel htmlFor="webview-idle-minutes">界面空闲回收</FieldLabel>
-          <FieldDescription>剪贴板、快捷短语和补全面板隐藏一段时间后释放 WebView，默认 5 分钟。</FieldDescription>
+          <FieldDescription>剪贴板、快捷短语和补全面板隐藏一段时间后释放 WebView，默认 60 分钟。</FieldDescription>
          </FieldContent>
          <div className="flex items-center gap-2">
           <Input id="webview-idle-minutes" type="number" min={1} max={1440} step={1} className="w-24" value={webViewIdleDraft} aria-invalid={webViewIdleDraft.trim()==="" || !Number.isInteger(Number(webViewIdleDraft)) || Number(webViewIdleDraft)<1 || Number(webViewIdleDraft)>1440} disabled={isBusy("webview-idle-minutes")} onChange={event=>setWebViewIdleDraft(event.target.value)} onKeyDown={event=>{if(event.key==="Enter")event.currentTarget.blur()}} onBlur={()=>{
