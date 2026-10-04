@@ -850,22 +850,40 @@ func sogouCandidateWindowState() (bool, bool) {
 	if targetPID == 0 {
 		return false, false
 	}
+	// Wails/WebView2 的输入控件和候选窗属于子进程，不能只匹配宿主进程。
+	focusPID := focusedWindowProcess(foreground)
 	className, _ := windows.UTF16PtrFromString("SoPY_Comp")
 	var previous uintptr
+	found := false
 	for {
 		hwnd, _, _ := procFindWindowExW.Call(0, previous, uintptr(unsafe.Pointer(className)), 0)
 		if hwnd == 0 {
-			return false, false
+			return found, false
 		}
 		previous = hwnd
 		var pid uint32
 		procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-		if pid != targetPID {
+		if pid != targetPID && (focusPID == 0 || pid != focusPID) {
 			continue
 		}
+		found = true
 		visible, _, _ := procIsWindowVisible.Call(hwnd)
-		return true, visible != 0
+		if visible != 0 {
+			return true, true
+		}
 	}
+}
+
+func focusedWindowProcess(foreground uintptr) uint32 {
+	var focusPID uint32
+	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
+	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info))); ok != 0 && info.HwndFocus != 0 {
+		root, _, _ := user32.NewProc("GetAncestor").Call(uintptr(info.HwndFocus), 2) // GA_ROOT
+		if root == foreground {
+			procGetWindowThreadProcessID.Call(uintptr(info.HwndFocus), uintptr(unsafe.Pointer(&focusPID)))
+		}
+	}
+	return focusPID
 }
 
 func completionReplacement(query, content string) (int, string) {

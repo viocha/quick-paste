@@ -58,7 +58,9 @@ func TestShouldApplyQueryLeftOffset(t *testing.T) {
 	if !shouldApplyQueryLeftOffset(autocompleteCaretWin32, start, true, moved) {
 		t.Fatal("advanced Win32 caret must apply the offset")
 	}
-	if !shouldApplyQueryLeftOffset(autocompleteCaretAutomation, rect{}, false, moved) {
-		t.Fatal("custom accessibility caret must preserve the existing offset behavior")
+	for _, source := range []autocompleteCaretSource{autocompleteCaretAutomation, autocompleteCaretAccessible, autocompleteCaretUnknown} {
+		if shouldApplyQueryLeftOffset(source, rect{}, false, moved) {
+			t.Fatal("仅有光标坐标时不能假定左侧已显示前缀")
+		}
 	}
 }

@@ -170,10 +170,8 @@ func shouldApplyQueryLeftOffset(source autocompleteCaretSource, start rect, star
 	case autocompleteCaretWin32:
 		return startValid && queryMovedEditorCaret(start, current)
 	default:
-		// Accessibility/custom-editor caret sources already represent rendered text
-		// geometry (including the Kugou text-descendant fallback), so preserve the
-		// existing query-width compensation for them.
-		return true
+		// 得到光标坐标不代表前缀已显示，需另外检查光标左侧的实际文本。
+		return false
 	}
 }
 
@@ -337,9 +335,6 @@ func automationFocusedQueryVisible(query string) bool {
 		return false
 	}
 	defer element.release()
-	if value, ok := automationElementValue(element); ok && strings.HasSuffix(value, query) {
-		return true
-	}
 	for _, spec := range []struct {
 		id  uintptr
 		iid *windows.GUID

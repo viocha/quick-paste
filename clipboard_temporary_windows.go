@@ -50,6 +50,7 @@ type temporaryClipboard struct {
 	service            *ClipboardService
 	hwnd, previousProc uintptr
 	targetPID          uint32
+	inputPID           uint32
 	text               []preparedClipboardFormat
 	backup             []preparedClipboardFormat
 	rendered, finished bool
@@ -85,7 +86,7 @@ func temporaryClipboardWindowProc(hwnd uintptr, message uint32, wParam, lParam u
 		if reader != 0 {
 			procGetWindowThreadProcessID.Call(reader, uintptr(unsafe.Pointer(&pid)))
 		}
-		if t.targetPID == 0 || (pid != 0 && pid != t.targetPID) || (pid == 0 && t.confirmation == nil) {
+		if t.targetPID == 0 || (pid != 0 && pid != t.targetPID && pid != t.inputPID) || (pid == 0 && t.confirmation == nil) {
 			return 0
 		}
 		item := &t.text[0]
@@ -268,6 +269,7 @@ func (s *ClipboardService) runTemporaryClipboard(text string, target uintptr, ba
 		defer t.confirmation.release()
 	}
 	procGetWindowThreadProcessID.Call(target, uintptr(unsafe.Pointer(&t.targetPID)))
+	t.inputPID = focusedWindowProcess(target)
 	if t.confirmation != nil {
 		// 文本变化事件唤醒完成检查；缺少事件时只在当前事务内查询实际文本。
 		hook, _, _ := procSetWinEventHook.Call(0x800E, 0x8014, 0, clipboardConfirmationEvent, uintptr(t.targetPID), 0, 0)
