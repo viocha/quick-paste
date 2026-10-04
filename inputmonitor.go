@@ -18,7 +18,7 @@ type InputMonitor struct {
 	browserKey         func(string)
 	takeOverWinV       func() bool
 	openClipboard      func()
-	pasteClipboardText func(string, uintptr, func() error) error
+	pasteClipboardText func(string, uintptr, int, func() error) error
 }
 
 func NewInputMonitor(app *application.App, store *PhraseStore) *InputMonitor {

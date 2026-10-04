@@ -15,16 +15,21 @@ import (
 )
 
 var (
-	procEnumClipboardFormats   = user32.NewProc("EnumClipboardFormats")
-	procSetLastError           = windows.NewLazySystemDLL("kernel32.dll").NewProc("SetLastError")
-	procSetWindowLongPtrW      = user32.NewProc("SetWindowLongPtrW")
-	procCallWindowProcW        = user32.NewProc("CallWindowProcW")
-	procDispatchMessageW       = user32.NewProc("DispatchMessageW")
-	procSetTimer               = user32.NewProc("SetTimer")
-	procKillTimer              = user32.NewProc("KillTimer")
-	procGetOpenClipboardWindow = user32.NewProc("GetOpenClipboardWindow")
-	temporaryClipboards        sync.Map
-	temporaryClipboardCallback = syscall.NewCallback(temporaryClipboardWindowProc)
+	errPasteConfirmationUnavailable = errors.New("无法可靠执行临时剪贴板粘贴")
+	procEnumClipboardFormats        = user32.NewProc("EnumClipboardFormats")
+	procSetLastError                = windows.NewLazySystemDLL("kernel32.dll").NewProc("SetLastError")
+	procSetWindowLongPtrW           = user32.NewProc("SetWindowLongPtrW")
+	procCallWindowProcW             = user32.NewProc("CallWindowProcW")
+	procDispatchMessageW            = user32.NewProc("DispatchMessageW")
+	procSetTimer                    = user32.NewProc("SetTimer")
+	procKillTimer                   = user32.NewProc("KillTimer")
+	procGetOpenClipboardWindow      = user32.NewProc("GetOpenClipboardWindow")
+	procSetWinEventHook             = user32.NewProc("SetWinEventHook")
+	procUnhookWinEvent              = user32.NewProc("UnhookWinEvent")
+	clipboardConfirmationHooks      sync.Map
+	clipboardConfirmationEvent      = syscall.NewCallback(clipboardConfirmationValueChanged)
+	temporaryClipboards             sync.Map
+	temporaryClipboardCallback      = syscall.NewCallback(temporaryClipboardWindowProc)
 )
 
 const (
@@ -33,6 +38,13 @@ const (
 	wmTimer               = 0x0113
 	wmTryRestoreClipboard = 0x8003
 )
+
+func clipboardConfirmationValueChanged(hook uintptr, event uint32, window uintptr, object, child int32, thread, timestamp uint32) uintptr {
+	if owner, ok := clipboardConfirmationHooks.Load(hook); ok {
+		procPostMessageW.Call(owner.(uintptr), wmTryRestoreClipboard, 0, 0)
+	}
+	return 0
+}
 
 type temporaryClipboard struct {
 	service            *ClipboardService
@@ -43,6 +55,7 @@ type temporaryClipboard struct {
 	rendered, finished bool
 	restoring          bool
 	active             bool
+	confirmation       *pasteConfirmation
 	deadline           time.Time
 	err                error
 }
@@ -72,7 +85,7 @@ func temporaryClipboardWindowProc(hwnd uintptr, message uint32, wParam, lParam u
 		if reader != 0 {
 			procGetWindowThreadProcessID.Call(reader, uintptr(unsafe.Pointer(&pid)))
 		}
-		if pid == 0 || t.targetPID == 0 || pid != t.targetPID {
+		if t.targetPID == 0 || (pid != 0 && pid != t.targetPID) || (pid == 0 && t.confirmation == nil) {
 			return 0
 		}
 		item := &t.text[0]
@@ -83,12 +96,24 @@ func temporaryClipboardWindowProc(hwnd uintptr, message uint32, wParam, lParam u
 			t.rendered = true
 		}
 		// 回调返回后读取者才取得数据；恢复必须等待它关闭剪贴板。
-		procSetTimer.Call(hwnd, 1, 15, 0)
+		interval := uintptr(15)
+		if t.confirmation != nil {
+			interval = 100
+		}
+		procSetTimer.Call(hwnd, 1, interval, 0)
 		procPostMessageW.Call(hwnd, wmTryRestoreClipboard, 0, 0)
 		return 0
 	case wmTryRestoreClipboard, wmTimer:
 		if t.finished {
 			return 0
+		}
+		if t.err == nil && t.confirmation != nil {
+			if !t.confirmation.completed() {
+				if time.Now().Before(t.deadline) {
+					return 0
+				}
+				t.err = errors.New("未确认目标文本插入完成，已停止并恢复剪贴板")
+			}
 		}
 		if !t.rendered && t.err == nil && time.Now().Before(t.deadline) {
 			return 0
@@ -187,16 +212,43 @@ func (t *temporaryClipboard) restore() {
 
 // pasteText 使用延迟渲染确认读取，再恢复备份；send 可注入替换/粘贴动作。
 func (s *ClipboardService) pasteText(text string, target uintptr, send func() error) error {
-	result := make(chan error, 1)
-	go func() { result <- s.runTemporaryClipboard(text, target, send) }()
-	return <-result
+	return s.pasteTextOrInput(text, target, 0, send, time.Duration(phraseInsertIntervalMillis.Load())*time.Millisecond)
 }
 
-func (s *ClipboardService) runTemporaryClipboard(text string, target uintptr, send func() error) error {
+func (s *ClipboardService) pasteTextWithRemoval(text string, target uintptr, backspaces int, send func() error) error {
+	return s.pasteTextOrInput(text, target, backspaces, send, time.Duration(completionInsertIntervalMillis.Load())*time.Millisecond)
+}
+
+func (s *ClipboardService) pasteTextOrInput(text string, target uintptr, backspaces int, send func() error, interval time.Duration) error {
+	native := nativeIMEInputMode()
+	result := make(chan error, 1)
+	go func() { result <- s.runTemporaryClipboard(text, target, backspaces, send) }()
+	err := <-result
+	if !errors.Is(err, errPasteConfirmationUnavailable) {
+		return err
+	}
+	// 仅在未修改剪贴板、未发送删除或粘贴时降级，超时后重发会重复输入。
+	foreground, _, _ := procGetForegroundWindow.Call()
+	if target == 0 || foreground != target {
+		return errors.New("输入窗口已切换，已停止输入")
+	}
+	if native {
+		// 中文预编辑必须沿用全 Unicode 替换；普通 ASCII 键会重新进入候选组合。
+		return sendFullReplacementWithInterval(backspaces, text, interval)
+	}
+	return sendReplacementWithInterval(backspaces, text, interval)
+}
+
+func (s *ClipboardService) runTemporaryClipboard(text string, target uintptr, backspaces int, send func() error) error {
 	s.clipboardMu.Lock()
 	defer s.clipboardMu.Unlock()
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	hr, _, _ := coInitializeEx.Call(0, 0)
+	if int32(hr) < 0 {
+		return errors.Join(errPasteConfirmationUnavailable, errors.New("初始化粘贴确认失败"))
+	}
+	defer coUninitialize.Call()
 	class, _ := windows.UTF16PtrFromString("STATIC")
 	hwnd, _, err := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), 0, 0, 0, 0, 0, 0, hwndMessage, 0, 0, 0)
 	if hwnd == 0 {
@@ -204,7 +256,26 @@ func (s *ClipboardService) runTemporaryClipboard(text string, target uintptr, se
 	}
 	defer procDestroyWindow.Call(hwnd)
 	t := &temporaryClipboard{service: s, hwnd: hwnd, deadline: time.Now().Add(2 * time.Second)}
+	t.confirmation = newPasteConfirmation(target, text, backspaces)
+	classBuffer := make([]uint16, 128)
+	user32.NewProc("GetClassNameW").Call(target, uintptr(unsafe.Pointer(&classBuffer[0])), uintptr(len(classBuffer)))
+	className := windows.UTF16ToString(classBuffer)
+	// 原生 Edit 的 WM_PASTE 同步复制文本；其他不可观察的控件使用直接输入。
+	if target != 0 && className != "Edit" && t.confirmation == nil {
+		return errPasteConfirmationUnavailable
+	}
+	if t.confirmation != nil {
+		defer t.confirmation.release()
+	}
 	procGetWindowThreadProcessID.Call(target, uintptr(unsafe.Pointer(&t.targetPID)))
+	if t.confirmation != nil {
+		// 文本变化事件唤醒完成检查；缺少事件时只在当前事务内查询实际文本。
+		hook, _, _ := procSetWinEventHook.Call(0x800E, 0x8014, 0, clipboardConfirmationEvent, uintptr(t.targetPID), 0, 0)
+		if hook != 0 {
+			clipboardConfirmationHooks.Store(hook, hwnd)
+			defer func() { procUnhookWinEvent.Call(hook); clipboardConfirmationHooks.Delete(hook) }()
+		}
+	}
 	temporaryClipboards.Store(hwnd, t)
 	defer temporaryClipboards.Delete(hwnd)
 	index := int32(-4) // GWLP_WNDPROC
@@ -239,7 +310,7 @@ func (s *ClipboardService) runTemporaryClipboard(text string, target uintptr, se
 		time.Sleep(time.Duration(i+1) * 15 * time.Millisecond)
 	}
 	if !opened {
-		return fmt.Errorf("打开剪贴板失败: %w", err)
+		return errors.Join(errPasteConfirmationUnavailable, fmt.Errorf("打开剪贴板失败: %w", err))
 	}
 	backup, err := backupOpenClipboard()
 	if err == nil && len(backup) > 0 {
@@ -247,7 +318,7 @@ func (s *ClipboardService) runTemporaryClipboard(text string, target uintptr, se
 	}
 	if err != nil {
 		procCloseClipboard.Call()
-		return err
+		return errors.Join(errPasteConfirmationUnavailable, err)
 	}
 	defer freePreparedClipboardFormats(t.backup)
 	s.mu.Lock()
@@ -272,12 +343,19 @@ func (s *ClipboardService) runTemporaryClipboard(text string, target uintptr, se
 	t.active = true
 	t.deadline = time.Now().Add(2 * time.Second)
 	procSetTimer.Call(hwnd, 1, 2000, 0)
+	if t.confirmation != nil {
+		procSetTimer.Call(hwnd, 1, 100, 0)
+	}
 	if t.err == nil {
 		sendErr := send()
 		t.err = errors.Join(t.err, sendErr)
 	}
 	if t.err != nil && !t.finished {
-		procSetTimer.Call(hwnd, 1, 15, 0)
+		interval := uintptr(15)
+		if t.confirmation != nil {
+			interval = 100
+		}
+		procSetTimer.Call(hwnd, 1, interval, 0)
 		t.restore()
 	}
 	var message msg

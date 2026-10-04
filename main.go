@@ -224,7 +224,7 @@ func main() {
 	monitor.browserKey = browser.routeKey
 	monitor.takeOverWinV = browser.GetWinVTakeover
 	monitor.openClipboard = func() { browser.toggle("clipboard") }
-	monitor.pasteClipboardText = clipboard.pasteText
+	monitor.pasteClipboardText = clipboard.pasteTextWithRemoval
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		backup.start()
 		if err := monitor.Start(); err != nil {

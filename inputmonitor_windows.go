@@ -1105,7 +1105,7 @@ func sendBackspaces(backspaces int) error {
 	return sendKeyboardInputs(inputs)
 }
 
-func sendClipboardReplacement(backspaces int, text string, target uintptr, method int32, paste func(string, uintptr, func() error) error) error {
+func sendClipboardReplacement(backspaces int, text string, target uintptr, method int32, paste func(string, uintptr, int, func() error) error) error {
 	if text == "" {
 		return sendBackspaces(backspaces)
 	}
@@ -1116,7 +1116,7 @@ func sendClipboardReplacement(backspaces int, text string, target uintptr, metho
 	if paste == nil {
 		return errors.New("剪贴板服务未初始化")
 	}
-	return paste(text, target, func() error {
+	return paste(text, target, backspaces, func() error {
 		foreground, _, _ := procGetForegroundWindow.Call()
 		if target != 0 && foreground != target {
 			return errors.New("输入窗口已切换，已停止输入")
@@ -1178,6 +1178,10 @@ func sendReplacementWithInterval(backspaces int, text string, interval time.Dura
 }
 
 func sendFullReplacement(backspaces int, text string) error {
+	return sendFullReplacementWithInterval(backspaces, text, time.Duration(completionInsertIntervalMillis.Load())*time.Millisecond)
+}
+
+func sendFullReplacementWithInterval(backspaces int, text string, interval time.Duration) error {
 	removal := make([]keyboardInput, 0, backspaces*2)
 	for i := 0; i < backspaces; i++ {
 		removal = append(removal,
@@ -1185,7 +1189,7 @@ func sendFullReplacement(backspaces int, text string) error {
 			keyboardInput{Type: inputKeyboard, Ki: keybdInput{Vk: vkBack, Flags: keyeventfKeyup, ExtraInfo: quickPasteInputMarker}},
 		)
 	}
-	if interval := time.Duration(completionInsertIntervalMillis.Load()) * time.Millisecond; interval > 0 {
+	if interval > 0 {
 		return sendPacedReplacement(removal, text, interval)
 	}
 	units := utf16.Encode([]rune(text))

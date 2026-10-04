@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"os"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 	"unsafe"
@@ -113,7 +115,7 @@ func TestTemporaryClipboardRestoresAfterReaderCloses(t *testing.T) {
 				runtime.LockOSThread()
 				defer runtime.UnlockOSThread()
 				defer close(readerDone)
-				class, _ := windows.UTF16PtrFromString("STATIC")
+				class, _ := windows.UTF16PtrFromString("EDIT")
 				hwnd, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), 0, 0, 0, 0, 0, 0, hwndMessage, 0, 0, 0)
 				defer procDestroyWindow.Call(hwnd)
 				ready <- hwnd
@@ -246,4 +248,64 @@ func TestTemporaryClipboardKeepsNewCopy(t *testing.T) {
 	if got := decodeUTF16Clipboard(readClipboardBackup(t)[cfUnicodeText]); got != "用户新复制" {
 		t.Fatalf("覆盖了用户新复制内容: %q", got)
 	}
+}
+
+// 浏览器回归需先聚焦 textarea，并指定测试窗口；不在普通测试中操作桌面。
+func TestTemporaryClipboardBrowserConfirmation(t *testing.T) {
+	value := os.Getenv("QUICK_PASTE_TEST_BROWSER_HWND")
+	if value == "" {
+		t.Skip("未指定浏览器测试窗口")
+	}
+	hwnd, err := strconv.ParseUint(value, 0, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreWindowFocus(uintptr(hwnd), 0); err != nil {
+		t.Fatal(err)
+	}
+	s := temporaryClipboardTestService(t)
+	setClipboardBackup(t, s, map[uint32][]byte{cfUnicodeText: encodeUTF16Clipboard("原剪贴板保留内容"), registerClipboardFormat("ExcludeClipboardContentFromMonitorProcessing"): {0, 0, 0, 0}})
+	before := readClipboardBackup(t)
+	method := runtimeInputCtrlV
+	sequence := clipboardSequence()
+	usedClipboard := false
+	if os.Getenv("QUICK_PASTE_TEST_BROWSER_SHIFT_INSERT") == "1" {
+		method = runtimeInputShiftInsert
+	}
+	if os.Getenv("QUICK_PASTE_TEST_BROWSER_COMPLETION") == "1" {
+		previous := completionInsertMethodRuntime.Swap(method)
+		defer completionInsertMethodRuntime.Store(previous)
+		result := make(chan error, 1)
+		state := &windowsInputState{
+			monitor: &InputMonitor{pasteClipboardText: func(text string, target uintptr, remove int, send func() error) error {
+				err := s.pasteTextWithRemoval(text, target, remove, func() error { usedClipboard = true; return send() })
+				result <- err
+				return err
+			}},
+			query: "qptest", suggestions: []Suggestion{{Content: "浏览器短语回归 😀"}},
+			lastForeground: uintptr(hwnd), actions: make(chan struct{}, 1), done: make(chan struct{}),
+			swallowKeyUp: make(map[uint32]bool), hideView: func() {}, nativeInputMode: func() bool { return false },
+		}
+		go state.runActions()
+		defer close(state.done)
+		if !state.handleKey(wmKeyDown, vkReturn) || !state.handleKey(wmKeyUp, vkReturn) {
+			t.Fatal("Enter 未接受补全")
+		}
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(6 * time.Second):
+			t.Fatal("补全超时")
+		}
+	} else {
+		if err := s.pasteText("浏览器短语回归 😀", uintptr(hwnd), func() error { usedClipboard = true; return sendPasteShortcut(method) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if os.Getenv("QUICK_PASTE_TEST_EXPECT_FALLBACK") == "1" && (usedClipboard || clipboardSequence() != sequence) {
+		t.Fatal("降级输入不应调用粘贴回调或修改系统剪贴板")
+	}
+	assertClipboardBackup(t, before)
 }
