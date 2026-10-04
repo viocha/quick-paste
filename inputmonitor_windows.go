@@ -805,7 +805,7 @@ func (s *windowsInputState) accept() {
 			if !native {
 				remove, insert = completionReplacement(query, item.Content)
 			}
-			err = sendClipboardReplacement(remove, insert, target, method, s.monitor.writeClipboardText)
+			err = sendClipboardReplacement(remove, insert, target, method, s.monitor.pasteClipboardText)
 		}
 		if err != nil {
 			log.Printf("补全插入失败: %v", err)
@@ -1105,28 +1105,27 @@ func sendBackspaces(backspaces int) error {
 	return sendKeyboardInputs(inputs)
 }
 
-func sendClipboardReplacement(backspaces int, text string, target uintptr, method int32, write func(string) error) error {
-	if err := sendBackspaces(backspaces); err != nil {
-		return err
-	}
+func sendClipboardReplacement(backspaces int, text string, target uintptr, method int32, paste func(string, uintptr, func() error) error) error {
 	if text == "" {
-		return nil
+		return sendBackspaces(backspaces)
 	}
 	foreground, _, _ := procGetForegroundWindow.Call()
 	if target != 0 && foreground != target {
 		return errors.New("输入窗口已切换，已停止输入")
 	}
-	if write == nil {
+	if paste == nil {
 		return errors.New("剪贴板服务未初始化")
 	}
-	if err := write(text); err != nil {
-		return err
-	}
-	foreground, _, _ = procGetForegroundWindow.Call()
-	if target != 0 && foreground != target {
-		return errors.New("输入窗口已切换，已停止输入")
-	}
-	return sendPasteShortcut(method)
+	return paste(text, target, func() error {
+		foreground, _, _ := procGetForegroundWindow.Call()
+		if target != 0 && foreground != target {
+			return errors.New("输入窗口已切换，已停止输入")
+		}
+		if err := sendBackspaces(backspaces); err != nil {
+			return err
+		}
+		return sendPasteShortcut(method)
+	})
 }
 
 func sendReplacementWithInterval(backspaces int, text string, interval time.Duration) error {

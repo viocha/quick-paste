@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -81,22 +82,23 @@ type bitmapInfo struct {
 }
 
 type ClipboardService struct {
-	app            *application.App
-	store          *ClipboardStore
-	browser        *BrowserService
-	mu             sync.Mutex
-	clipboardMu    sync.Mutex
-	enabled        bool
-	done           chan struct{}
-	listenerThread uint32
-	listenerWindow uintptr
-	lastSeq        uint32
-	suppressSeq    uint32
-	htmlFormat     uint32
-	rtfFormat      uint32
-	deletedItem    *ClipboardItem
-	deletedFormats map[uint32][]byte
-	iconCache      map[string]string
+	app             *application.App
+	store           *ClipboardStore
+	browser         *BrowserService
+	mu              sync.Mutex
+	clipboardMu     sync.Mutex
+	enabled         bool
+	done            chan struct{}
+	listenerThread  uint32
+	listenerWindow  uintptr
+	lastSeq         uint32
+	suppressSeq     uint32
+	temporaryWindow uintptr
+	htmlFormat      uint32
+	rtfFormat       uint32
+	deletedItem     *ClipboardItem
+	deletedFormats  map[uint32][]byte
+	iconCache       map[string]string
 }
 
 func NewClipboardService(app *application.App, store *ClipboardStore, browser *BrowserService) *ClipboardService {
@@ -174,7 +176,8 @@ func (s *ClipboardService) handleClipboardUpdate() {
 		s.mu.Unlock()
 		return
 	}
-	enabled, suppressed := s.enabled, seq == s.suppressSeq
+	owner, _, _ := procGetClipboardOwner.Call()
+	enabled, suppressed := s.enabled, seq == s.suppressSeq || (s.temporaryWindow != 0 && owner == s.temporaryWindow)
 	if !enabled || suppressed {
 		s.lastSeq = seq
 	}
@@ -219,6 +222,8 @@ func (s *ClipboardService) capture(source, executable string) (ClipboardItem, ma
 }
 
 func (s *ClipboardService) captureFormats() (map[uint32][]byte, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	var last error
 	for i := 0; i < 5; i++ {
 		if ok, _, err := procOpenClipboard.Call(0); ok != 0 {
@@ -781,6 +786,15 @@ func encodeUTF16Clipboard(text string) []byte {
 }
 
 func (s *ClipboardService) write(formats map[uint32][]byte) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	// EmptyClipboard 后必须有有效窗口作为所有者，SetClipboardData 才能可靠写入。
+	class, _ := windows.UTF16PtrFromString("STATIC")
+	hwnd, _, createErr := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), 0, 0, 0, 0, 0, 0, hwndMessage, 0, 0, 0)
+	if hwnd == 0 {
+		return fmt.Errorf("创建剪贴板写入窗口失败: %w", createErr)
+	}
+	defer procDestroyWindow.Call(hwnd)
 	prepared, err := s.prepareClipboardFormats(formats)
 	if err != nil {
 		return err
@@ -798,7 +812,7 @@ func (s *ClipboardService) write(formats map[uint32][]byte) error {
 	var openErr error
 	opened := false
 	for i := 0; i < 5; i++ {
-		if ok, _, err := procOpenClipboard.Call(0); ok != 0 {
+		if ok, _, err := procOpenClipboard.Call(hwnd); ok != 0 {
 			opened = true
 			break
 		} else {
@@ -822,11 +836,7 @@ func (s *ClipboardService) write(formats map[uint32][]byte) error {
 		// SetClipboardData 成功后句柄所有权移交给系统。
 		item.handle = 0
 	}
-	procCloseClipboard.Call()
-	s.mu.Lock()
-	s.suppressSeq = clipboardSequence()
-	s.lastSeq = s.suppressSeq
-	s.mu.Unlock()
+	s.closeSuppressedClipboard()
 	return nil
 }
 

@@ -688,17 +688,13 @@ func (s *BrowserService) Insert(id string) error {
 			if s.clipboard == nil {
 				return errors.New("剪贴板服务未初始化")
 			}
-			if err := s.clipboard.write(map[uint32][]byte{cfUnicodeText: encodeUTF16Clipboard(content)}); err != nil {
-				return fmt.Errorf("写入剪贴板失败: %w", err)
-			}
-			current, _, _ = procGetForegroundWindow.Call()
-			if current != s.target {
-				return errors.New("输入窗口已切换，已取消粘贴")
-			}
-			if err := sendPasteShortcut(method); err != nil {
-				return fmt.Errorf("输入失败: %w", err)
-			}
-			return nil
+			return s.clipboard.pasteText(content, s.target, func() error {
+				current, _, _ := procGetForegroundWindow.Call()
+				if current != s.target {
+					return errors.New("输入窗口已切换，已取消粘贴")
+				}
+				return sendPasteShortcut(method)
+			})
 		}
 	}
 	return errors.New("短语已被删除，请重新打开浏览窗口")

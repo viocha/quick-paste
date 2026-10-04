@@ -10,6 +10,8 @@ import (
 
 func testInputState(t *testing.T) *windowsInputState {
 	t.Helper()
+	method := completionInsertMethodRuntime.Swap(runtimeInputSend)
+	t.Cleanup(func() { completionInsertMethodRuntime.Store(method) })
 	s := &windowsInputState{
 		monitor: &InputMonitor{store: &PhraseStore{nodes: []PhraseNode{
 			{ID: "folder", Type: NodeTypeFolder, Name: "Enabled", CompletionEnabled: true},
