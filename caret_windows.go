@@ -335,6 +335,11 @@ func automationFocusedQueryVisible(query string) bool {
 		return false
 	}
 	defer element.release()
+	var isPassword int32
+	if element.call(35, uintptr(unsafe.Pointer(&isPassword))) && isPassword != 0 {
+		// 密码框可能返回明文或掩码，使用 IA2 核对插入点前的字符。
+		return ia2PasswordQueryVisible(element, query)
+	}
 	for _, spec := range []struct {
 		id  uintptr
 		iid *windows.GUID
