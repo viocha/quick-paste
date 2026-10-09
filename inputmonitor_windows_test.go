@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -214,6 +215,107 @@ func TestFirstPopupWaitsForTriggerKeyUp(t *testing.T) {
 	drainActions(t, s)
 	if shows != 1 {
 		t.Fatalf("popup shows after trigger keyup = %d", shows)
+	}
+}
+
+func TestIMECommitShiftDismissesCompletion(t *testing.T) {
+	for _, vk := range []uint32{vkShift, vkLShift, vkRShift} {
+		t.Run(fmt.Sprintf("Shift_%X", vk), func(t *testing.T) {
+			s := testInputState(t)
+			native := true
+			s.nativeInputMode = func() bool { return native }
+			shows, hides := 0, 0
+			s.showView = func(SuggestionPayload) { shows++ }
+			s.hideView = func() { hides++ }
+			for _, ch := range "abc" {
+				s.append(ch)
+			}
+			drainActions(t, s)
+			shows, hides = 0, 0
+			version := s.queryVersion
+			if s.handleKey(wmKeyDown, vk) {
+				t.Fatal("Shift 按下不能被吞掉")
+			}
+			if s.query != "abc" {
+				t.Fatal("Shift 释放前应保留补全前缀")
+			}
+			native = false
+			if s.handleKey(wmKeyUp, vk) {
+				t.Fatal("Shift 释放不能被吞掉")
+			}
+			drainActions(t, s)
+			if s.query != "" || len(s.suggestions) != 0 || s.queryVersion == version || hides != 1 || shows != 0 {
+				t.Fatalf("上屏后补全未清理: query=%q hides=%d shows=%d", s.query, hides, shows)
+			}
+			for _, ch := range "abc" {
+				s.append(ch)
+			}
+			drainActions(t, s)
+			if s.query != "abc" || shows == 0 {
+				t.Fatal("新输入应从新前缀触发补全")
+			}
+		})
+	}
+}
+
+func TestShiftPreservesOrdinaryCompletion(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		s := testInputState(t)
+		s.nativeInputMode = func() bool { return native }
+		for _, ch := range "abc" {
+			s.append(ch)
+		}
+		s.handleKey(wmKeyDown, vkLShift)
+		if native {
+			// 中文状态下 Shift 加字母属于组合输入，不能在释放时清空前缀。
+			s.handleKey(wmKeyDown, 'A')
+			s.handleKey(wmKeyUp, 'A')
+		}
+		s.handleKey(wmKeyUp, vkLShift)
+		drainActions(t, s)
+		want := "abc"
+		if native {
+			want += "a"
+		}
+		if s.query != want {
+			t.Fatalf("普通输入前缀 = %q，期望 %q", s.query, want)
+		}
+	}
+}
+
+func TestIMECommitShiftDiscardsPendingPopup(t *testing.T) {
+	s := testInputState(t)
+	s.nativeInputMode = func() bool { return true }
+	gate := make(chan struct{})
+	s.enqueue(func() { <-gate })
+	shows := 0
+	s.showView = func(SuggestionPayload) { shows++ }
+	s.append('a')
+	s.append('b')
+	s.appendKey('c', 'C')
+	s.handleKey(wmKeyDown, vkLShift)
+	s.handleKey(wmKeyUp, vkLShift)
+	s.handleKey(wmKeyUp, 'C')
+	close(gate)
+	drainActions(t, s)
+	if s.query != "" || len(s.pendingPopupKeyUp) != 0 || shows != 0 {
+		t.Fatal("英文上屏后不能重新显示排队中的候选")
+	}
+}
+
+func TestResetCancelsIMECommitShift(t *testing.T) {
+	s := testInputState(t)
+	s.nativeInputMode = func() bool { return true }
+	s.append('a')
+	s.handleKey(wmKeyDown, vkLShift)
+	s.handleMouseClick()
+	for _, ch := range "abc" {
+		s.append(ch)
+	}
+	s.handleKey(wmKeyUp, vkLShift)
+	drainActions(t, s)
+	if s.query != "abc" || len(s.suggestions) != 1 {
+		t.Fatal("焦点切换后的新查询不能被上一个 Shift 释放清空")
 	}
 }
 

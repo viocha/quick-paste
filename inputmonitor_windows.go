@@ -55,6 +55,8 @@ const (
 	vkDelete  = 0x2E
 	vkLWin    = 0x5B
 	vkRWin    = 0x5C
+	vkLShift  = 0xA0
+	vkRShift  = 0xA1
 	vkV       = 0x56
 	vkCapital = 0x14
 
@@ -185,6 +187,7 @@ type windowsInputState struct {
 	lastForeground    uintptr
 	swallowKeyUp      map[uint32]bool
 	acceptOnKeyUp     bool
+	imeCommitShift    uint32
 	pendingPopupKeyUp map[uint32]bool
 	winVDown          bool
 	actions           chan struct{}
@@ -390,6 +393,7 @@ func (s *windowsInputState) handleMouseClick() {
 	s.suggestions = nil
 	s.active = 0
 	s.acceptOnKeyUp = false
+	s.imeCommitShift = 0
 	s.queryStartCaret = rect{}
 	s.queryStartValid = false
 	s.popupPositioned = false
@@ -405,6 +409,12 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 	isUp := message == wmKeyUp || message == wmSysKeyUp
 	if !isDown && !isUp {
 		return false
+	}
+	if isDown && !isShiftKey(vk) {
+		// Shift 组合键属于正常输入，只有单独释放 Shift 才视为输入法上屏。
+		s.mu.Lock()
+		s.imeCommitShift = 0
+		s.mu.Unlock()
 	}
 
 	if vk == vkV {
@@ -445,6 +455,10 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 
 	if isUp {
 		s.mu.Lock()
+		commitIME := isShiftKey(vk) && s.imeCommitShift == vk
+		if commitIME {
+			s.imeCommitShift = 0
+		}
 		swallow := s.swallowKeyUp[vk]
 		if swallow {
 			delete(s.swallowKeyUp, vk)
@@ -459,6 +473,10 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 		}
 		showPopup := pendingPopup && len(s.pendingPopupKeyUp) == 0 && len(s.suggestions) > 0
 		s.mu.Unlock()
+		if commitIME {
+			s.reset()
+			return swallow
+		}
 		if accept {
 			s.accept()
 		}
@@ -535,6 +553,22 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 		s.reset()
 		return false
 	}
+	if isShiftKey(vk) {
+		s.mu.Lock()
+		query := s.query
+		version := s.queryVersion
+		s.mu.Unlock()
+		// 在目标输入法处理 Shift 前记录中文状态；释放时它可能已切换到英文。
+		// 这里只调用 Win32 输入法状态查询，不在低级钩子中执行 UIA/COM 查询。
+		if query != "" && s.nativeInputMode != nil && s.nativeInputMode() {
+			s.mu.Lock()
+			if s.queryVersion == version {
+				s.imeCommitShift = vk
+			}
+			s.mu.Unlock()
+		}
+		return false
+	}
 
 	if visible {
 		switch vk {
@@ -584,6 +618,10 @@ func (s *windowsInputState) markKeyUpForSwallow(vk uint32) {
 	s.mu.Lock()
 	s.swallowKeyUp[vk] = true
 	s.mu.Unlock()
+}
+
+func isShiftKey(vk uint32) bool {
+	return vk == vkShift || vk == vkLShift || vk == vkRShift
 }
 
 func keyPressed(vk uint32) bool {
@@ -900,6 +938,7 @@ func (s *windowsInputState) reset() {
 	s.suggestions = nil
 	s.active = 0
 	s.acceptOnKeyUp = false
+	s.imeCommitShift = 0
 	s.queryStartCaret = rect{}
 	s.queryStartValid = false
 	s.popupPositioned = false
