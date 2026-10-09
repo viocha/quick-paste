@@ -266,6 +266,13 @@ export function BrowserApp() {
   },[expanded])
   useEffect(()=>()=>{window.clearTimeout(copiedTimer.current);clearDetailTimer()},[])
   useEffect(()=>{clearDetailTimer();void BrowserService.DismissDetail()},[tab,queries])
+  useLayoutEffect(()=>{
+    if(!showRequestVersion||loading||tab!=="clipboard")return
+    // 列表提交后再归顶，避免滚动锚定保留重新打开前的位置。
+    const viewport=scrollAreaRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    if(viewport)viewport.scrollTop=0
+    setClipboardWindowStart(0)
+  },[showRequestVersion,loading,tab])
   useEffect(()=>{
     if(!showRequestVersion||loading)return
     const timer=window.setTimeout(()=>void BrowserService.ReadyToShow(),0)

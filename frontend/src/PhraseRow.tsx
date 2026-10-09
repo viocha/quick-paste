@@ -1,5 +1,5 @@
 import { useTooltipDelay, useTooltipTimeout } from "./TooltipDelay"
-import { cloneElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react"
+import { cloneElement, useEffect, useLayoutEffect, useRef, useState, type ReactElement, type ComponentProps } from "react"
 import { FileTextIcon } from "lucide-react"
 import { BrowserService } from "../bindings/quick-paste"
 
@@ -9,7 +9,7 @@ function queueDetail(action:()=>PromiseLike<unknown>) {
   detailRequests=detailRequests.then(action).then(()=>{},()=>{})
 }
 
-export function PhraseRow({name, content, render, externalDetailId}: {name:string; content?:string; render:ReactElement; externalDetailId?:string}) {
+export function PhraseRow({name, content, render, externalDetailId}: {name:string; content?:string; render:ReactElement<ComponentProps<"button">>; externalDetailId?:string}) {
   const tooltipDelay=useTooltipDelay()
   const tooltipTimeout=useTooltipTimeout()
   const summary=useRef<HTMLSpanElement>(null)
