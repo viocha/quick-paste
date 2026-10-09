@@ -31,6 +31,16 @@ func newPasteConfirmation(target uintptr, text string, backspaces int) *pasteCon
 		return nil
 	}
 	defer element.release()
+	return newPasteConfirmationFromElement(element, text, backspaces)
+}
+
+func newPasteConfirmationFromElement(element *caretCOM, text string, backspaces int) *pasteConfirmation {
+	var isPassword int32
+	// 密码控件的 TextPattern 可能存在，但文本是掩码，无法核对实际插入内容。
+	// 在修改剪贴板、发送删除或粘贴前拒绝确认，让调用方使用直接输入。
+	if element == nil || !element.call(35, uintptr(unsafe.Pointer(&isPassword))) || isPassword != 0 {
+		return nil
+	}
 	var pattern *caretCOM
 	if !element.call(14, 10014, uintptr(unsafe.Pointer(iidText)), uintptr(unsafe.Pointer(&pattern))) || pattern == nil {
 		return nil
