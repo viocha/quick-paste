@@ -680,7 +680,7 @@ func (s *BrowserService) Insert(id string) error {
 				s.hide()
 			}
 			if method == runtimeInputSend {
-				if err := sendReplacementWithInterval(0, content, time.Duration(phraseInsertIntervalMillis.Load())*time.Millisecond); err != nil {
+				if err := sendReplacementWithInterval(0, content, time.Duration(inputIntervalMillis.Load())*time.Millisecond); err != nil {
 					return fmt.Errorf("输入失败: %w", err)
 				}
 				return nil

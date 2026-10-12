@@ -213,11 +213,11 @@ func (t *temporaryClipboard) restore() {
 
 // pasteText 使用延迟渲染确认读取，再恢复备份；send 可注入替换/粘贴动作。
 func (s *ClipboardService) pasteText(text string, target uintptr, send func() error) error {
-	return s.pasteTextOrInput(text, target, 0, send, time.Duration(phraseInsertIntervalMillis.Load())*time.Millisecond)
+	return s.pasteTextOrInput(text, target, 0, send, time.Duration(inputIntervalMillis.Load())*time.Millisecond)
 }
 
 func (s *ClipboardService) pasteTextWithRemoval(text string, target uintptr, backspaces int, send func() error) error {
-	return s.pasteTextOrInput(text, target, backspaces, send, time.Duration(completionInsertIntervalMillis.Load())*time.Millisecond)
+	return s.pasteTextOrInput(text, target, backspaces, send, time.Duration(inputIntervalMillis.Load())*time.Millisecond)
 }
 
 func (s *ClipboardService) pasteTextOrInput(text string, target uintptr, backspaces int, send func() error, interval time.Duration) error {

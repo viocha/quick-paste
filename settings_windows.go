@@ -32,17 +32,16 @@ const (
 )
 
 type SettingsService struct {
-	registryPath                      string
-	app                               *application.App
-	onWebViewIdleMinutesChanged       func(int)
-	onPhraseInsertIntervalChanged     func(int)
-	onCompletionInsertIntervalChanged func(int)
-	onClipboardPasteMethodChanged     func(string)
-	onPhraseInsertMethodChanged       func(string)
-	onCompletionInsertMethodChanged   func(string)
+	registryPath                    string
+	app                             *application.App
+	onWebViewIdleMinutesChanged     func(int)
+	onInputIntervalChanged          func(int)
+	onClipboardPasteMethodChanged   func(string)
+	onPhraseInsertMethodChanged     func(string)
+	onCompletionInsertMethodChanged func(string)
 }
 
-func (s *SettingsService) GetCompletionInsertIntervalMs() (int, error) {
+func (s *SettingsService) GetInputIntervalMs() (int, error) {
 	key, err := registry.OpenKey(registry.CURRENT_USER, s.preferencesPath(), registry.QUERY_VALUE)
 	if errors.Is(err, registry.ErrNotExist) {
 		return 0, nil
@@ -51,7 +50,7 @@ func (s *SettingsService) GetCompletionInsertIntervalMs() (int, error) {
 		return 0, err
 	}
 	defer key.Close()
-	value, _, err := key.GetIntegerValue("CompletionInsertIntervalMs")
+	value, _, err := key.GetIntegerValue("InputIntervalMs")
 	if errors.Is(err, registry.ErrNotExist) {
 		return 0, nil
 	}
@@ -64,7 +63,7 @@ func (s *SettingsService) GetCompletionInsertIntervalMs() (int, error) {
 	return int(value), nil
 }
 
-func (s *SettingsService) SetCompletionInsertIntervalMs(interval int) error {
+func (s *SettingsService) SetInputIntervalMs(interval int) error {
 	if interval < 0 || interval > maxInsertIntervalMs {
 		return fmt.Errorf("输入间隔须为 0–%d 毫秒", maxInsertIntervalMs)
 	}
@@ -73,48 +72,11 @@ func (s *SettingsService) SetCompletionInsertIntervalMs(interval int) error {
 		return err
 	}
 	defer key.Close()
-	if err := key.SetDWordValue("CompletionInsertIntervalMs", uint32(interval)); err != nil {
+	if err := key.SetDWordValue("InputIntervalMs", uint32(interval)); err != nil {
 		return err
 	}
-	if s.onCompletionInsertIntervalChanged != nil {
-		s.onCompletionInsertIntervalChanged(interval)
-	}
-	return nil
-}
-
-func (s *SettingsService) GetPhraseInsertIntervalMs() (int, error) {
-	key, err := registry.OpenKey(registry.CURRENT_USER, s.preferencesPath(), registry.QUERY_VALUE)
-	if errors.Is(err, registry.ErrNotExist) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	defer key.Close()
-	value, _, err := key.GetIntegerValue("PhraseInsertIntervalMs")
-	if errors.Is(err, registry.ErrNotExist) {
-		return 0, nil
-	}
-	if err != nil || value > maxInsertIntervalMs {
-		return 0, err
-	}
-	return int(value), nil
-}
-
-func (s *SettingsService) SetPhraseInsertIntervalMs(interval int) error {
-	if interval < 0 || interval > maxInsertIntervalMs {
-		return fmt.Errorf("输入间隔须为 0–%d 毫秒", maxInsertIntervalMs)
-	}
-	key, _, err := registry.CreateKey(registry.CURRENT_USER, s.preferencesPath(), registry.SET_VALUE)
-	if err != nil {
-		return err
-	}
-	defer key.Close()
-	if err := key.SetDWordValue("PhraseInsertIntervalMs", uint32(interval)); err != nil {
-		return err
-	}
-	if s.onPhraseInsertIntervalChanged != nil {
-		s.onPhraseInsertIntervalChanged(interval)
+	if s.onInputIntervalChanged != nil {
+		s.onInputIntervalChanged(interval)
 	}
 	return nil
 }

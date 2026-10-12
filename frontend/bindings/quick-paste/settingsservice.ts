@@ -13,16 +13,12 @@ export function GetClipboardPasteMethod(): $CancellablePromise<string> {
     return $Call.ByID(3355719428);
 }
 
-export function GetCompletionInsertIntervalMs(): $CancellablePromise<number> {
-    return $Call.ByID(219491446);
-}
-
 export function GetCompletionInsertMethod(): $CancellablePromise<string> {
     return $Call.ByID(2073062670);
 }
 
-export function GetPhraseInsertIntervalMs(): $CancellablePromise<number> {
-    return $Call.ByID(3615454581);
+export function GetInputIntervalMs(): $CancellablePromise<number> {
+    return $Call.ByID(1762160649);
 }
 
 export function GetPhraseInsertMethod(): $CancellablePromise<string> {
@@ -49,16 +45,12 @@ export function SetClipboardPasteMethod(value: string): $CancellablePromise<void
     return $Call.ByID(2026781360, value);
 }
 
-export function SetCompletionInsertIntervalMs(interval: number): $CancellablePromise<void> {
-    return $Call.ByID(2258680610, interval);
-}
-
 export function SetCompletionInsertMethod(value: string): $CancellablePromise<void> {
     return $Call.ByID(723918098, value);
 }
 
-export function SetPhraseInsertIntervalMs(interval: number): $CancellablePromise<void> {
-    return $Call.ByID(3844308657, interval);
+export function SetInputIntervalMs(interval: number): $CancellablePromise<void> {
+    return $Call.ByID(4256557877, interval);
 }
 
 export function SetPhraseInsertMethod(value: string): $CancellablePromise<void> {

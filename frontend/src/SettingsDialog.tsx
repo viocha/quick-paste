@@ -42,13 +42,10 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
  const [webViewIdleMinutes,setWebViewIdleMinutes]=useState(60)
  const [webViewIdleDraft,setWebViewIdleDraft]=useState("60")
  const [phraseInsertMethod,setPhraseInsertMethod]=useState("ctrl-v")
- const [phraseInsertIntervalMs,setPhraseInsertIntervalMs]=useState(0)
- const [phraseInsertIntervalDraft,setPhraseInsertIntervalDraft]=useState("0")
- const phraseInsertIntervalValid=phraseInsertIntervalDraft.trim()!==""&&Number.isInteger(Number(phraseInsertIntervalDraft))&&Number(phraseInsertIntervalDraft)>=0&&Number(phraseInsertIntervalDraft)<=1000
  const [completionInsertMethod,setCompletionInsertMethod]=useState("ctrl-v")
- const [completionInsertIntervalMs,setCompletionInsertIntervalMs]=useState(0)
- const [completionInsertIntervalDraft,setCompletionInsertIntervalDraft]=useState("0")
- const completionInsertIntervalValid=completionInsertIntervalDraft.trim()!==""&&Number.isInteger(Number(completionInsertIntervalDraft))&&Number(completionInsertIntervalDraft)>=0&&Number(completionInsertIntervalDraft)<=1000
+ const [inputIntervalMs,setInputIntervalMs]=useState(0)
+ const [inputIntervalDraft,setInputIntervalDraft]=useState("0")
+ const inputIntervalValid=inputIntervalDraft.trim()!==""&&Number.isInteger(Number(inputIntervalDraft))&&Number(inputIntervalDraft)>=0&&Number(inputIntervalDraft)<=1000
  const [clipboardPasteMethod,setClipboardPasteMethod]=useState("ctrl-v")
  const [hotkey,setHotkey]=useState("")
  const [savedHotkey,setSavedHotkey]=useState("")
@@ -79,9 +76,9 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
   if(!open)return
   let active=true
   setLoading(true);setPreview(null);setDiffOpen(false);setConfirmRestore(false);setTab("general")
-  const generalRequest=Promise.all([SettingsService.GetAutostart(),SettingsService.GetWebViewIdleMinutes(),SettingsService.GetPhraseInsertMethod(),SettingsService.GetPhraseInsertIntervalMs(),SettingsService.GetCompletionInsertMethod(),SettingsService.GetCompletionInsertIntervalMs(),SettingsService.GetClipboardPasteMethod(),BackupService.GetState(),BackupService.GetPassword()]).then(([enabled,idleMinutes,phraseMethod,phraseIntervalMs,completionMethod,completionIntervalMs,clipboardMethod,value,currentPassword])=>{
+  const generalRequest=Promise.all([SettingsService.GetAutostart(),SettingsService.GetWebViewIdleMinutes(),SettingsService.GetPhraseInsertMethod(),SettingsService.GetCompletionInsertMethod(),SettingsService.GetInputIntervalMs(),SettingsService.GetClipboardPasteMethod(),BackupService.GetState(),BackupService.GetPassword()]).then(([enabled,idleMinutes,phraseMethod,completionMethod,inputIntervalMs,clipboardMethod,value,currentPassword])=>{
    if(!active)return
-   setAutostart(enabled);setWebViewIdleMinutes(idleMinutes);setWebViewIdleDraft(String(idleMinutes));setPhraseInsertMethod(phraseMethod);setPhraseInsertIntervalMs(phraseIntervalMs);setPhraseInsertIntervalDraft(String(phraseIntervalMs));setCompletionInsertMethod(completionMethod);setCompletionInsertIntervalMs(completionIntervalMs);setCompletionInsertIntervalDraft(String(completionIntervalMs));setClipboardPasteMethod(clipboardMethod);setState(value);setConfig({server:value.server,username:value.username,automatic:value.automatic,intervalHours:value.intervalHours});setPassword(currentPassword);setSavedPassword(currentPassword);setShowPassword(false)
+   setAutostart(enabled);setWebViewIdleMinutes(idleMinutes);setWebViewIdleDraft(String(idleMinutes));setPhraseInsertMethod(phraseMethod);setCompletionInsertMethod(completionMethod);setInputIntervalMs(inputIntervalMs);setInputIntervalDraft(String(inputIntervalMs));setClipboardPasteMethod(clipboardMethod);setState(value);setConfig({server:value.server,username:value.username,automatic:value.automatic,intervalHours:value.intervalHours});setPassword(currentPassword);setSavedPassword(currentPassword);setShowPassword(false)
   }).catch(error=>{if(active)toast.add({type:"error",title:"操作失败",description:String(error)})})
   const hotkeyRequest=Promise.all([BrowserService.GetHotkey(),BrowserService.GetHotkeyError()]).then(([value,error])=>{if(active){setHotkey(value);setSavedHotkey(value);setHotkeyError(error)}}).catch(error=>{if(active)setHotkeyError(String(error))})
   const clipboardRequest=Promise.all([ClipboardService.GetEnabled(),BrowserService.GetClipboardHotkey(),BrowserService.GetClipboardHotkeyError(),BrowserService.GetWinVTakeover(),ClipboardService.GetLimits(),ClipboardService.GetStats()]).then(([enabled,value,error,takeover,limits,stats])=>{if(active){setClipboardEnabled(enabled);setClipboardHotkey(value);setSavedClipboardHotkey(value);setClipboardHotkeyError(error);setWinVTakeover(takeover);setClipboardLimits(limits);setSavedClipboardLimits(limits);setClipboardStats(stats)}}).catch(error=>{if(active)setClipboardHotkeyError(String(error))})
@@ -137,28 +134,21 @@ export function SettingsDialog({open,onOpenChange,onRestored}: {open:boolean;onO
           <SelectTrigger className="w-40"><SelectValue/></SelectTrigger><SelectContent alignItemWithTrigger={false}><SelectGroup>{textInputMethodOptions.map(option=><SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectGroup></SelectContent>
          </Select>
         </Field>
-        {phraseInsertMethod==="send-input"&&<Field orientation="horizontal" data-invalid={!phraseInsertIntervalValid}>
-         <FieldContent><FieldLabel htmlFor="phrase-insert-interval-ms">短语插入间隔</FieldLabel><FieldDescription>0 为批量 SendInput；大于 0 时逐字符输入。</FieldDescription></FieldContent>
-         <div className="flex items-center gap-2"><Input id="phrase-insert-interval-ms" type="number" min={0} max={1000} step={10} className="w-24" value={phraseInsertIntervalDraft} aria-invalid={!phraseInsertIntervalValid} disabled={isBusy("phrase-insert-interval-ms")} onChange={event=>setPhraseInsertIntervalDraft(event.target.value)} onKeyDown={event=>{if(event.key==="Enter")event.currentTarget.blur()}} onBlur={()=>{
-          if(!phraseInsertIntervalValid){setPhraseInsertIntervalDraft(String(phraseInsertIntervalMs));return}
-          const next=Number(phraseInsertIntervalDraft)
-          if(next!==phraseInsertIntervalMs)void run("phrase-insert-interval-ms",async()=>{try{await SettingsService.SetPhraseInsertIntervalMs(next);setPhraseInsertIntervalMs(next)}catch(error){setPhraseInsertIntervalDraft(String(phraseInsertIntervalMs));throw error}})
-         }}/><span className="text-xs text-muted-foreground">毫秒</span></div>
-        </Field>}
+
         <Field orientation="horizontal">
          <FieldContent><FieldLabel>短语补全</FieldLabel><FieldDescription>补全面板接受候选项时使用；前缀删除仍由键盘输入完成。</FieldDescription></FieldContent>
          <Select items={textInputMethodOptions} value={completionInsertMethod} onValueChange={value=>{if(value===null||value===completionInsertMethod)return;void run("completion-insert-method",async()=>{await SettingsService.SetCompletionInsertMethod(value);setCompletionInsertMethod(value)})}}>
           <SelectTrigger className="w-40"><SelectValue/></SelectTrigger><SelectContent alignItemWithTrigger={false}><SelectGroup>{textInputMethodOptions.map(option=><SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectGroup></SelectContent>
          </Select>
         </Field>
-        {completionInsertMethod==="send-input"&&<Field orientation="horizontal" data-invalid={!completionInsertIntervalValid}>
-         <FieldContent><FieldLabel htmlFor="completion-insert-interval-ms">短语补全间隔</FieldLabel><FieldDescription>0 为批量 SendInput；大于 0 时逐字符输入。</FieldDescription></FieldContent>
-         <div className="flex items-center gap-2"><Input id="completion-insert-interval-ms" type="number" min={0} max={1000} step={10} className="w-24" value={completionInsertIntervalDraft} aria-invalid={!completionInsertIntervalValid} disabled={isBusy("completion-insert-interval-ms")} onChange={event=>setCompletionInsertIntervalDraft(event.target.value)} onKeyDown={event=>{if(event.key==="Enter")event.currentTarget.blur()}} onBlur={()=>{
-          if(!completionInsertIntervalValid){setCompletionInsertIntervalDraft(String(completionInsertIntervalMs));return}
-          const next=Number(completionInsertIntervalDraft)
-          if(next!==completionInsertIntervalMs)void run("completion-insert-interval-ms",async()=>{try{await SettingsService.SetCompletionInsertIntervalMs(next);setCompletionInsertIntervalMs(next)}catch(error){setCompletionInsertIntervalDraft(String(completionInsertIntervalMs));throw error}})
+        <Field orientation="horizontal" data-invalid={!inputIntervalValid}>
+         <FieldContent><FieldLabel htmlFor="input-interval-ms">输入间隔</FieldLabel><FieldDescription>用于 SendInput 和粘贴自动降级；0 为批量输入，大于 0 时逐字符输入。</FieldDescription></FieldContent>
+         <div className="flex items-center gap-2"><Input id="input-interval-ms" type="number" min={0} max={1000} step={10} className="w-24" value={inputIntervalDraft} aria-invalid={!inputIntervalValid} disabled={isBusy("input-interval-ms")} onChange={event=>setInputIntervalDraft(event.target.value)} onKeyDown={event=>{if(event.key==="Enter")event.currentTarget.blur()}} onBlur={()=>{
+          if(!inputIntervalValid){setInputIntervalDraft(String(inputIntervalMs));return}
+          const next=Number(inputIntervalDraft)
+          if(next!==inputIntervalMs)void run("input-interval-ms",async()=>{try{await SettingsService.SetInputIntervalMs(next);setInputIntervalMs(next)}catch(error){setInputIntervalDraft(String(inputIntervalMs));throw error}})
          }}/><span className="text-xs text-muted-foreground">毫秒</span></div>
-        </Field>}
+        </Field>
        </FieldGroup>
       </section>
       <section className="space-y-3 border-t pt-5">

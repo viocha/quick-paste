@@ -79,8 +79,7 @@ const (
 )
 
 var (
-	completionInsertIntervalMillis atomic.Int64
-	phraseInsertIntervalMillis     atomic.Int64
+	inputIntervalMillis            atomic.Int64
 	clipboardPasteMethodRuntime    atomic.Int32
 	phraseInsertMethodRuntime      atomic.Int32
 	completionInsertMethodRuntime  atomic.Int32
@@ -1148,7 +1147,7 @@ func (s *windowsInputState) managerHWND() uintptr {
 }
 
 func sendReplacement(backspaces int, text string) error {
-	return sendReplacementWithInterval(backspaces, text, time.Duration(completionInsertIntervalMillis.Load())*time.Millisecond)
+	return sendReplacementWithInterval(backspaces, text, time.Duration(inputIntervalMillis.Load())*time.Millisecond)
 }
 
 func sendBackspaces(backspaces int) error {
@@ -1235,7 +1234,7 @@ func sendReplacementWithInterval(backspaces int, text string, interval time.Dura
 }
 
 func sendFullReplacement(backspaces int, text string) error {
-	return sendFullReplacementWithInterval(backspaces, text, time.Duration(completionInsertIntervalMillis.Load())*time.Millisecond)
+	return sendFullReplacementWithInterval(backspaces, text, time.Duration(inputIntervalMillis.Load())*time.Millisecond)
 }
 
 func sendFullReplacementWithInterval(backspaces int, text string, interval time.Duration) error {

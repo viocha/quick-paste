@@ -28,13 +28,9 @@ func main() {
 	}
 
 	settings := &SettingsService{}
-	completionInterval, err := settings.GetCompletionInsertIntervalMs()
+	inputInterval, err := settings.GetInputIntervalMs()
 	if err != nil {
-		log.Printf("读取短语补全输入间隔失败，使用默认值: %v", err)
-	}
-	phraseInterval, err := settings.GetPhraseInsertIntervalMs()
-	if err != nil {
-		log.Printf("读取短语插入输入间隔失败，使用默认值: %v", err)
+		log.Printf("读取输入间隔失败，使用默认值: %v", err)
 	}
 	clipboardMethod, err := settings.GetClipboardPasteMethod()
 	if err != nil {
@@ -51,13 +47,11 @@ func main() {
 		log.Printf("读取短语补全方式失败，使用默认值: %v", err)
 		completionMethod = inputMethodCtrlV
 	}
-	completionInsertIntervalMillis.Store(int64(completionInterval))
-	phraseInsertIntervalMillis.Store(int64(phraseInterval))
+	inputIntervalMillis.Store(int64(inputInterval))
 	clipboardPasteMethodRuntime.Store(runtimeInputMethod(clipboardMethod))
 	phraseInsertMethodRuntime.Store(runtimeInputMethod(phraseMethod))
 	completionInsertMethodRuntime.Store(runtimeInputMethod(completionMethod))
-	settings.onCompletionInsertIntervalChanged = func(interval int) { completionInsertIntervalMillis.Store(int64(interval)) }
-	settings.onPhraseInsertIntervalChanged = func(interval int) { phraseInsertIntervalMillis.Store(int64(interval)) }
+	settings.onInputIntervalChanged = func(interval int) { inputIntervalMillis.Store(int64(interval)) }
 	settings.onClipboardPasteMethodChanged = func(value string) { clipboardPasteMethodRuntime.Store(runtimeInputMethod(value)) }
 	settings.onPhraseInsertMethodChanged = func(value string) { phraseInsertMethodRuntime.Store(runtimeInputMethod(value)) }
 	settings.onCompletionInsertMethodChanged = func(value string) { completionInsertMethodRuntime.Store(runtimeInputMethod(value)) }
