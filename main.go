@@ -131,7 +131,7 @@ func main() {
 	tray.SetIcon(appIcon)
 	tray.SetTooltip("Quick Paste")
 	trayMenu := app.NewMenu()
-	trayMenu.Add("打开窗口").OnClick(func(*application.Context) {
+	trayMenu.Add("打开").OnClick(func(*application.Context) {
 		openManager()
 	})
 	trayMenu.AddSeparator()
