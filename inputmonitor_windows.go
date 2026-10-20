@@ -486,6 +486,15 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 	}
 
 	if s.monitor != nil && s.monitor.browserOpen.Load() {
+		if vk == vkTab && (keyPressed(vkCtrl) || keyPressed(vkShift)) && !keyPressed(vkMenu) && !keyPressed(vkLWin) && !keyPressed(vkRWin) && s.monitor.browserKey != nil {
+			key := "NextTab"
+			if keyPressed(vkShift) {
+				key = "PreviousTab"
+			}
+			s.markKeyUpForSwallow(vk)
+			s.enqueue(func() { s.monitor.browserKey(key) })
+			return true
+		}
 		if vk == 'F' && keyPressed(vkCtrl) && !keyPressed(vkShift) && !keyPressed(vkMenu) && !keyPressed(vkLWin) && !keyPressed(vkRWin) && s.monitor.browserKey != nil {
 			foreground, _, _ := procGetForegroundWindow.Call()
 			var processID uint32

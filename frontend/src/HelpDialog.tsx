@@ -24,6 +24,8 @@ export function HelpDialog({ open, onOpenChange }: { open: boolean; onOpenChange
           <h2 id="help-browser" className="px-2.5 text-sm font-medium">快捷面板</h2>
           <ItemGroup className="gap-0">
             <Item size="xs" className="py-0.5"><ItemContent><ItemTitle className="font-normal">固定</ItemTitle></ItemContent><ItemDescription>切换窗口不关闭，插入当前光标</ItemDescription></Item>
+            <Item size="xs" className="py-0.5"><ItemContent><ItemTitle className="font-normal"><Kbd>Ctrl+F</Kbd></ItemTitle></ItemContent><ItemDescription>聚焦搜索框</ItemDescription></Item>
+            <Item size="xs" className="py-0.5"><ItemContent><ItemTitle className="font-normal"><Kbd>Ctrl+Tab</Kbd> / <Kbd>Shift+Tab</Kbd></ItemTitle></ItemContent><ItemDescription>面板显示时切换页签，无需聚焦</ItemDescription></Item>
             <Item size="xs" className="py-0.5"><ItemContent><ItemTitle className="font-normal"><Kbd>Esc</Kbd></ItemTitle></ItemContent><ItemDescription>关闭</ItemDescription></Item>
           </ItemGroup>
         </section>
