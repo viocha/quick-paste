@@ -6,7 +6,7 @@ import { toast } from "@/components/ui/toast"
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react"
 import type { CSSProperties, DragEvent } from "react"
 import {
-  CheckIcon,
+  SparklesIcon,
   CircleHelpIcon,
   FolderIcon,
   FolderOpenIcon,
@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/collapsible"
 import {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuGroup,
   ContextMenuItem,
@@ -208,10 +209,10 @@ function TreeNode({
               <FolderPlusIcon />
               新建文件夹
             </ContextMenuItem>
-            <ContextMenuItem disabled={completionInherited} onClick={() => void onToggleCompletion(node)}>
-              {node.completionEnabled || completionInherited ? <CheckIcon /> : <span className="size-4" />}
+            <ContextMenuCheckboxItem checked={!!node.completionEnabled || completionInherited} disabled={completionInherited} onCheckedChange={() => void onToggleCompletion(node)}>
+              <SparklesIcon />
               {completionInherited ? "自动补全（已继承）" : "自动补全"}
-            </ContextMenuItem>
+            </ContextMenuCheckboxItem>
             <ContextMenuSeparator />
           </>
         )}

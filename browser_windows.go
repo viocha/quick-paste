@@ -481,6 +481,10 @@ func (s *BrowserService) routeKey(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.visible && s.window != nil {
+		if key == "Find" {
+			// 搜索需要接收实际键盘输入，激活面板但保留原粘贴目标。
+			s.window.Focus()
+		}
 		s.window.EmitEvent("browser-key", key)
 	}
 }

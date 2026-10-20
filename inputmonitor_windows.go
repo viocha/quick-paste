@@ -486,6 +486,16 @@ func (s *windowsInputState) handleKey(message uint32, vk uint32) bool {
 	}
 
 	if s.monitor != nil && s.monitor.browserOpen.Load() {
+		if vk == 'F' && keyPressed(vkCtrl) && !keyPressed(vkShift) && !keyPressed(vkMenu) && !keyPressed(vkLWin) && !keyPressed(vkRWin) && s.monitor.browserKey != nil {
+			foreground, _, _ := procGetForegroundWindow.Call()
+			var processID uint32
+			procGetWindowThreadProcessID.Call(foreground, uintptr(unsafe.Pointer(&processID)))
+			if processID != uint32(os.Getpid()) {
+				s.markKeyUpForSwallow(vk)
+				s.enqueue(func() { s.monitor.browserKey("Find") })
+				return true
+			}
+		}
 		if vk == vkReturn && keyPressed(vkShift) {
 			s.markKeyUpForSwallow(vk)
 			return true

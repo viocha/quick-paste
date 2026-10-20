@@ -3,7 +3,7 @@ import type { DragEvent } from "react"
 import {
   AppWindowIcon, CheckIcon, ClipboardIcon, CopyIcon, FileIcon, FileTextIcon, FolderIcon, FolderOpenIcon,
   FolderInputIcon, FolderPlusIcon, ImageIcon, PencilIcon, PinIcon, PinOffIcon, PlusIcon,
-  SearchIcon, Trash2Icon, XIcon,
+  SearchIcon, SparklesIcon, Trash2Icon, XIcon,
 } from "lucide-react"
 import { Events } from "@wailsio/runtime"
 import { BrowserService, ClipboardService, PhraseService, type ClipboardListItem, type PhraseNode } from "../bindings/quick-paste"
@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Button } from "@/components/ui/button"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import { ContextMenu, ContextMenuContent, ContextMenuGroup, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
+import { ContextMenu, ContextMenuCheckboxItem, ContextMenuContent, ContextMenuGroup, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useTooltipDelay } from "./TooltipDelay"
 import { canMove, childNodes, hasEnabledCompletionAncestor } from "./phrase-tree"
@@ -244,7 +244,7 @@ export function BrowserApp() {
     const hidden=Events.On("browser-hidden",resetTransient)
     const browserKey=Events.On("browser-key",event=>{
       const key=event.data
-      if(typeof key==="string")browserRootRef.current?.dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true}))
+      if(typeof key==="string")browserRootRef.current?.dispatchEvent(new KeyboardEvent("keydown",{key:key==="Find"?"f":key,ctrlKey:key==="Find",bubbles:true,cancelable:true}))
     })
     void BrowserService.GetActiveTab().then(value=>{if(active)setTab(value==="clipboard"?"clipboard":"phrase")}).catch(()=>{})
     void BrowserService.GetPinned().then(value=>{if(active)setPinned(value)}).catch(()=>{})
@@ -421,9 +421,9 @@ export function BrowserApp() {
       {node.type==="folder"&&<>
         <ContextMenuItem onClick={()=>openEditor(undefined,node.id,"phrase")}><PlusIcon/>新建短语</ContextMenuItem>
         <ContextMenuItem onClick={()=>openEditor(undefined,node.id,"folder")}><FolderPlusIcon/>新建文件夹</ContextMenuItem>
-        <ContextMenuItem disabled={completionInherited} onClick={()=>void run(async()=>{await PhraseService.SetFolderCompletion(node.id,!node.completionEnabled);await reloadPhrases()})}>
-          {node.completionEnabled||completionInherited?<CheckIcon/>:<span className="size-4"/>}{completionInherited?"自动补全（已继承）":"自动补全"}
-        </ContextMenuItem>
+        <ContextMenuCheckboxItem checked={!!node.completionEnabled||completionInherited} disabled={completionInherited} onCheckedChange={enabled=>void run(async()=>{await PhraseService.SetFolderCompletion(node.id,enabled);await reloadPhrases()})}>
+          <SparklesIcon/>{completionInherited?"自动补全（已继承）":"自动补全"}
+        </ContextMenuCheckboxItem>
         <ContextMenuSeparator/>
       </>}
       <ContextMenuItem onClick={()=>openEditor(node)}><PencilIcon/>{node.type==="folder"?"重命名":"编辑"}</ContextMenuItem>
@@ -509,6 +509,16 @@ export function BrowserApp() {
 
   return <div ref={browserRootRef} className="relative flex h-svh select-none flex-col overflow-hidden border bg-popover text-popover-foreground" onPointerMove={event=>{const point={x:event.screenX,y:event.screenY};lastPointerScreen.current=point;if(pointerHoverReady)return;const origin=pointerHoverOrigin.current;if(origin===null){pointerHoverOrigin.current=point;return}if(origin.x!==point.x||origin.y!==point.y)setPointerHoverReady(true)}} onPointerDownCapture={event=>{lastPointerScreen.current={x:event.screenX,y:event.screenY};setKeyboardNavigation(false)}} onMouseDownCapture={event=>{if(event.button===1)event.preventDefault()}} onKeyDown={event=>{
     if(editor||moveNode||event.nativeEvent.isComposing||event.defaultPrevented||(event.target as HTMLElement).closest('[role="menu"]'))return
+    if(event.ctrlKey&&!event.altKey&&!event.metaKey&&!event.shiftKey&&event.key.toLowerCase()==="f"){
+      event.preventDefault()
+      setKeyboardNavigation(false)
+      clipboardFocusIndexRef.current=null;setClipboardFocusIndex(null);clipboardFocusPending.current=false
+      phraseFocusIdRef.current=null;setPhraseFocusId(null)
+      clearDetailTimer();void BrowserService.DismissDetail()
+      searchRef.current?.focus()
+      searchRef.current?.select()
+      return
+    }
     const active=document.activeElement as HTMLElement
     if(event.key==="ArrowDown"||event.key==="ArrowUp"){
       setKeyboardNavigation(true)
@@ -585,7 +595,7 @@ export function BrowserApp() {
       <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 border-b"/>
     </header>
     <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2 py-1">
-      <SearchIcon className="size-3.5 text-muted-foreground"/><Input ref={searchRef} className="h-6 border-0 px-1 text-xs shadow-none focus-visible:ring-0" placeholder={tab==="clipboard"?"搜索剪贴板":"搜索名称、内容或路径"} value={queries[tab]} onChange={e=>setQueries({...queries,[tab]:e.target.value})}/>
+      <SearchIcon className="size-3.5 text-muted-foreground"/><Input ref={searchRef} aria-label={tab==="clipboard"?"搜索剪贴板":"搜索短语"} aria-keyshortcuts="Control+f" className="h-6 border-0 px-1 text-xs shadow-none focus-visible:ring-0" placeholder={tab==="clipboard"?"搜索剪贴板":"搜索短语"} value={queries[tab]} onChange={e=>setQueries({...queries,[tab]:e.target.value})}/>
     </div>
     {tab==="clipboard"&&!captureEnabled&&<button className="shrink-0 border-b bg-muted/50 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground" onClick={()=>void run(async()=>{await ClipboardService.SetEnabled(true);setCaptureEnabled(true)})}>剪贴板已关闭，点击开启</button>}
     <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1" viewportClassName="[&>[data-slot=scroll-area-content]]:min-h-full [&>[data-slot=scroll-area-content]]:flex [&>[data-slot=scroll-area-content]]:flex-col" onScrollCapture={event=>{clearDetailTimer();void BrowserService.DismissDetail();if(tab==="clipboard"&&(event.target as HTMLElement).dataset.slot==="scroll-area-viewport"){const viewport=event.target as HTMLElement;const next=clipboardWindowStartForScroll(items,clipboardVirtual.offsets,viewport.scrollTop);setClipboardWindowStart(current=>current===next?current:next);if(viewport.scrollTop+viewport.clientHeight>=viewport.scrollHeight-800)void loadMoreClipboard()}}}>
