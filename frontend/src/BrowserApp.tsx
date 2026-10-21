@@ -161,6 +161,14 @@ export function BrowserApp() {
     phraseFocusIdRef.current=null;setPhraseFocusId(null)
     setKeyboardNavigation(false)
   }
+  const contextMenuState=(id:string)=>({
+    onOpenChange:(open:boolean)=>{
+      if(open){clearListFocus();setContextId(id)}
+    },
+    onOpenChangeComplete:(open:boolean)=>{
+      if(!open)setContextId(current=>current===id?null:current)
+    },
+  })
   const focusSearch=()=>{
     clearListFocus()
     clearDetailTimer();void BrowserService.DismissDetail()
@@ -173,6 +181,7 @@ export function BrowserApp() {
   }
   useLayoutEffect(()=>{
     clearListFocus()
+    setContextId(null)
   },[tab])
   useEffect(()=>{
     const switchPanelTab=(event:KeyboardEvent)=>{
@@ -477,7 +486,7 @@ export function BrowserApp() {
       if(node.type==="folder"){
         const childCount=childNodes(nodes,node.id).length
         return <li key={node.id}>
-        <ContextMenu onOpenChange={open=>setContextId(open?node.id:null)}>
+        <ContextMenu {...contextMenuState(node.id)}>
           <ContextMenuTrigger className={contextId===node.id?"rounded bg-accent":undefined}>
             <button {...dragProps(node)} data-selectable="true" data-node-id={node.id} data-folder-id={node.id} className={`flex h-7 w-full min-w-0 items-center gap-1 scroll-my-1 rounded pr-2 text-left text-xs ${pointerHoverReady?"hover:bg-accent":""} outline-none focus-visible:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 ${phraseFocusId===node.id?"bg-accent":""} ${keyboardNavigation&&phraseFocusId===node.id?"ring-[3px] ring-ring/50":""} ${dropTarget===node.id?"bg-accent ring-2 ring-inset ring-ring":""}`} style={{paddingLeft:4+depth*12}} aria-expanded={open} onFocus={()=>{phraseFocusIdRef.current=node.id;setPhraseFocusId(node.id)}} onClick={()=>setExpanded(current=>{const next=new Set(current);if(open)next.delete(node.id);else next.add(node.id);return next})}>
               {open?<FolderOpenIcon className="size-3.5 shrink-0"/>:<FolderIcon className="size-3.5 shrink-0"/>}<span className="min-w-0 truncate">{node.name}</span>
@@ -491,7 +500,7 @@ export function BrowserApp() {
       </li>
       }
       return <li key={node.id}>
-       <ContextMenu onOpenChange={open=>setContextId(open?node.id:null)}>
+       <ContextMenu {...contextMenuState(node.id)}>
         <ContextMenuTrigger className={contextId===node.id?"rounded bg-accent":undefined}>
          <button {...dragProps(node)} data-selectable="true" data-node-id={node.id} disabled={busy} onFocus={()=>{phraseFocusIdRef.current=node.id;setPhraseFocusId(node.id)}} onClick={()=>void insert(node.id)} style={{paddingLeft:4+depth*12}} className={`flex min-h-7 w-full min-w-0 items-center gap-1 scroll-my-1 rounded py-0.5 text-xs ${pointerHoverReady?"hover:bg-accent":""} outline-none focus-visible:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50 ${phraseFocusId===node.id?"bg-accent":""} ${keyboardNavigation&&phraseFocusId===node.id?"ring-[3px] ring-ring/50":""}`}>
            <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground"/><span className="min-w-0 text-left"><span className="block truncate leading-3.5">{node.name}</span>{node.content&&<span className="block truncate text-[11px] leading-3 text-muted-foreground">{node.content.replace(/\s+/g," ")}</span>}</span>
@@ -542,14 +551,14 @@ export function BrowserApp() {
     {tab==="clipboard"&&!captureEnabled&&<button className="shrink-0 border-b bg-muted/50 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground" onClick={()=>void run(async()=>{await ClipboardService.SetEnabled(true);setCaptureEnabled(true)})}>剪贴板已关闭，点击开启</button>}
     <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1" viewportClassName="[&>[data-slot=scroll-area-content]]:min-h-full [&>[data-slot=scroll-area-content]]:flex [&>[data-slot=scroll-area-content]]:flex-col" onScrollCapture={event=>{clearDetailTimer();void BrowserService.DismissDetail();if(tab==="clipboard"&&(event.target as HTMLElement).dataset.slot==="scroll-area-viewport"){const viewport=event.target as HTMLElement;const next=clipboardWindowStartForScroll(items,clipboardVirtual.offsets,viewport.scrollTop);setClipboardWindowStart(current=>current===next?current:next);if(viewport.scrollTop+viewport.clientHeight>=viewport.scrollHeight-800)void loadMoreClipboard()}}}>
       {loading?<div className="min-h-full flex-1"/>:tab==="phrase"?<ContextMenu><ContextMenuTrigger className={`flex flex-1 flex-col ${dropTarget===""?"bg-accent/40 ring-2 ring-inset ring-ring":""}`} onDragOver={event=>{if(!draggedId||!canMove(nodes,draggedId,""))return;event.preventDefault();event.dataTransfer.dropEffect="move";setDropTarget("")}} onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setDropTarget(current=>current===""?null:current)}} onDrop={event=>{event.preventDefault();const id=event.dataTransfer.getData("application/x-quick-paste-node")||draggedId||"";setDraggedId(null);setDropTarget(null);if(canMove(nodes,id,""))void run(()=>movePhraseNode(id,""))}}><ul className="p-1">{phraseResults?phraseResults.map(({node,path})=><li key={node.id}>
-        <ContextMenu onOpenChange={open=>setContextId(open?node.id:null)}>
+        <ContextMenu {...contextMenuState(node.id)}>
           <ContextMenuTrigger className={contextId===node.id?"rounded bg-accent":undefined}>
             <button {...dragProps(node)} data-selectable="true" data-node-id={node.id} onFocus={()=>{phraseFocusIdRef.current=node.id;setPhraseFocusId(node.id)}} onClick={()=>void insert(node.id)} className={`flex min-h-7 w-full min-w-0 items-center gap-1 scroll-my-1 rounded px-1 py-0.5 text-left ${pointerHoverReady?"hover:bg-accent":""} outline-none focus-visible:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 ${phraseFocusId===node.id?"bg-accent":""} ${keyboardNavigation&&phraseFocusId===node.id?"ring-[3px] ring-ring/50":""}`}><FileTextIcon className="size-3.5 shrink-0 text-muted-foreground"/><span className="min-w-0"><span className="block truncate text-xs leading-3.5">{node.name}</span><span className="block truncate text-[11px] leading-3 text-muted-foreground">{path}{node.content?` · ${node.content.replace(/\s+/g," ")}`:""}</span></span></button>
           </ContextMenuTrigger>
           {phraseContext(node)}
         </ContextMenu>
       </li>):tree()}{(phraseResults?.length===0||(!phraseResults&&nodes.length===0))&&<p className="p-5 text-center text-xs text-muted-foreground">{queries.phrase?"没有匹配的短语":"暂无短语"}</p>}</ul></ContextMenuTrigger><ContextMenuContent finalFocus={false}><ContextMenuGroup><ContextMenuItem onClick={()=>openEditor(undefined,"","phrase")}><PlusIcon/>新建短语</ContextMenuItem><ContextMenuItem onClick={()=>openEditor(undefined,"","folder")}><FolderPlusIcon/>新建文件夹</ContextMenuItem></ContextMenuGroup></ContextMenuContent></ContextMenu>:
-      <div role="listbox" className="relative min-h-full" style={{height:items.length?clipboardVirtual.totalHeight:undefined}}>{clipboardVirtual.visible.map((item,virtualIndex)=>{const index=clipboardVirtual.start+virtualIndex;return <div key={item.id} className="absolute inset-x-1.5" style={{top:clipboardVirtual.offsets[index],height:clipboardRowHeight(item)}}><ContextMenu onOpenChange={open=>setContextId(open?item.id:null)}>
+      <div role="listbox" className="relative min-h-full" style={{height:items.length?clipboardVirtual.totalHeight:undefined}}>{clipboardVirtual.visible.map((item,virtualIndex)=>{const index=clipboardVirtual.start+virtualIndex;return <div key={item.id} className="absolute inset-x-1.5" style={{top:clipboardVirtual.offsets[index],height:clipboardRowHeight(item)}}><ContextMenu {...contextMenuState(item.id)}>
         <ContextMenuTrigger className="block h-full">
           <div className={`group relative h-full rounded-md border has-[>button:focus-visible]:bg-accent has-[>button:focus-visible]:border-ring has-[>button:focus-visible]:ring-[3px] has-[>button:focus-visible]:ring-ring/50 ${pointerHoverReady?"hover:border-border":""} ${contextId===item.id||clipboardFocusIndex===index?"border-border bg-accent":`bg-background/40 ${pointerHoverReady?"hover:bg-accent":""}`} ${keyboardNavigation&&clipboardFocusIndex===index?"border-ring ring-[3px] ring-ring/50":""}`} onPointerEnter={event=>{if(!pointerHoverReady)return;clearDetailTimer();const element=event.currentTarget;const summary=element.querySelector<HTMLElement>("[data-clipboard-summary]");const truncated=!!summary&&(summary.scrollHeight>summary.clientHeight||summary.scrollWidth>summary.clientWidth);if(item.kind!=="image"&&!truncated)return;detailTimer.current=setTimeout(()=>{detailTimer.current=null;if(element.isConnected&&element.matches(":hover")){const bounds=element.getBoundingClientRect();void BrowserService.ShowDetail(item.id,Math.round(bounds.top),Math.round(bounds.height))}},tooltipDelay)}} onPointerLeave={()=>{clearDetailTimer();void BrowserService.HideDetail(item.id)}} onPointerDown={()=>{clearDetailTimer();void BrowserService.DismissDetail()}}>
             <button data-selectable="true" data-clipboard-id={item.id} data-clipboard-index={index} data-plain={item.hasText?"true":"false"} onFocus={()=>{clipboardFocusIndexRef.current=index;setClipboardFocusIndex(index)}} onClick={()=>void paste(item.id)} onAuxClick={e=>{if(e.button===1){e.preventDefault();if(item.hasText)void paste(item.id,true)}}} className="grid h-full w-full grid-rows-[16px_minmax(0,1fr)] gap-1 rounded-[inherit] px-2 py-1 text-left outline-none">
@@ -642,7 +651,7 @@ export function BrowserApp() {
     }
     if(event.key==="Escape"){if(editor)closeEditor();else void BrowserService.Hide()}
   }}>
-    <header onPointerDown={event=>{if(event.button===0&&!(event.target as HTMLElement).closest("button,input,[data-no-drag]")){void BrowserService.BeginDrag().catch(e=>setError(String(e)))}}} className="relative grid h-9 shrink-0 cursor-move grid-cols-[1fr_auto_1fr] items-center px-1">
+    <header onPointerDown={event=>{if(event.button===0&&!(event.target as HTMLElement).closest("button,input,[data-no-drag]")){clearListFocus();void BrowserService.BeginDrag().catch(e=>setError(String(e)))}}} className="relative grid h-9 shrink-0 cursor-move grid-cols-[1fr_auto_1fr] items-center px-1">
       <div aria-hidden="true"/>
       <div className="flex h-full items-center">
         <TabsList activateOnFocus={false} aria-label="快捷面板分类">
