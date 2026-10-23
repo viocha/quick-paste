@@ -182,7 +182,7 @@ func main() {
 	detailSlot := &lazyWindow{idleDelay: idleWindowRetention}
 	detailSlot.create = func() *application.WebviewWindow {
 		return app.Window.NewWithOptions(application.WebviewWindowOptions{
-			Name: "phrase-detail", Title: "短语详情", Width: 300, Height: 160,
+			Name: "phrase-detail", Title: "短语详情", Width: browserDetailWidth, Height: 160,
 			Hidden: true, Frameless: true, DisableResize: true, AlwaysOnTop: true,
 			BackgroundType: application.BackgroundTypeTransparent, BackgroundColour: application.NewRGBA(0, 0, 0, 0), URL: "/#detail",
 			Windows: application.WindowsWindow{

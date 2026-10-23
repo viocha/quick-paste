@@ -20,8 +20,8 @@ func TestBrowserDetailSidePlacement(t *testing.T) {
 		panel, work        rect
 		width, height, gap int
 	}{
-		{rect{-400, -800, -80, -440}, rect{-1920, -1080, 0, 0}, 300, 320, 4},
-		{rect{200, 50, 520, 410}, rect{0, 0, 640, 480}, 300, 320, 4},
+		{rect{-400, -800, -80, -440}, rect{-1920, -1080, 0, 0}, 420, 480, 4},
+		{rect{200, 50, 520, 410}, rect{0, 0, 640, 480}, 640, 600, 4},
 		{rect{1920, 20, 2400, 560}, rect{1920, 0, 3840, 2100}, 450, 480, 6},
 		{rect{0, 0, 320, 360}, rect{0, 0, 320, 200}, 300, 320, 4},
 	} {
@@ -56,8 +56,8 @@ func TestBrowserDetailHeightAndScrolling(t *testing.T) {
 		scroll        bool
 	}{
 		{62, 1040, 96, 64, false}, {62, 1040, 120, 80, false}, {62, 1040, 144, 96, false},
-		{319, 1040, 96, 320, false},
-		{320, 1040, 96, 320, false}, {321, 1040, 96, 320, true}, {900, 1040, 144, 480, true},
+		{479, 1040, 96, 480, false},
+		{480, 1040, 96, 480, false}, {481, 1040, 96, 480, true}, {900, 1040, 144, 720, true},
 		{90, 100, 144, 99, true}, {30, 1040, 0, 32, false},
 	} {
 		height, scroll := browserDetailHeight(tc.content, tc.work, tc.dpi)

@@ -9,6 +9,11 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
+const (
+	browserDetailWidth     = 420
+	browserDetailMaxHeight = 480
+)
+
 type BrowserDetail struct {
 	Token      int    `json:"token"`
 	Content    string `json:"content"`
@@ -56,7 +61,7 @@ func browserDetailHeightWithLimit(contentHeight, workHeight int, dpi uintptr, ma
 }
 
 func browserDetailHeight(contentHeight, workHeight int, dpi uintptr) (int, bool) {
-	return browserDetailHeightWithLimit(contentHeight, workHeight, dpi, 320)
+	return browserDetailHeightWithLimit(contentHeight, workHeight, dpi, browserDetailMaxHeight)
 }
 
 func (s *BrowserService) GetDetail() BrowserDetail {
@@ -142,9 +147,9 @@ func (s *BrowserService) DetailReady(token, height int) {
 	}
 	// Decide whether content actually exceeds the permitted window height,
 	// independently of the WebView's previous viewport and scrollbar state.
-	logicalWidth, maxLogicalHeight := 300, 320
+	logicalWidth, maxLogicalHeight := browserDetailWidth, browserDetailMaxHeight
 	if s.detail.Image != "" {
-		logicalWidth, maxLogicalHeight = 520, 460
+		logicalWidth, maxLogicalHeight = 640, 600
 	}
 	physicalHeight, scrollable := browserDetailHeightWithLimit(height, int(info.Work.Bottom-info.Work.Top), dpi, maxLogicalHeight)
 	bounds := placeBrowserDetail(panel, info.Work, (s.detailRow.Top+s.detailRow.Bottom)/2, scaleForDPI(logicalWidth, dpi), physicalHeight, 0)
