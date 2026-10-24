@@ -2,7 +2,11 @@
 
 package main
 
-import "golang.org/x/sys/windows"
+import (
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
 
 var (
 	procDwmSetWindowAttribute = windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
@@ -16,6 +20,18 @@ type monitorInfo struct {
 	Monitor rect
 	Work    rect
 	Flags   uint32
+}
+
+// 输入矩形使用物理屏幕坐标，按其所在显示器的缩放换算逻辑像素阈值。
+func dpiForScreenRect(bounds rect) uintptr {
+	monitor, _, _ := procMonitorFromRect.Call(uintptr(unsafe.Pointer(&bounds)), 2)
+	if monitor != 0 {
+		var dpiX, dpiY uint32
+		if hr, _, _ := procGetDpiForMonitor.Call(monitor, 0, uintptr(unsafe.Pointer(&dpiX)), uintptr(unsafe.Pointer(&dpiY))); int32(hr) >= 0 && dpiX > 0 {
+			return uintptr(dpiX)
+		}
+	}
+	return 96
 }
 
 // All coordinates are physical screen pixels, including negative monitor origins.

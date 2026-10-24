@@ -154,7 +154,11 @@ func win32CaretScreenRectFromInfo(info guiThreadInfo) (rect, bool) {
 }
 
 func queryMovedEditorCaret(start, current rect) bool {
-	const movementTolerance int32 = 2
+	return queryMovedEditorCaretAtDPI(start, current, dpiForScreenRect(current))
+}
+
+func queryMovedEditorCaretAtDPI(start, current rect, dpi uintptr) bool {
+	movementTolerance := int32(scaleForDPI(2, dpi))
 	if current.Top > start.Bottom+movementTolerance || current.Bottom < start.Top-movementTolerance {
 		return true
 	}
@@ -176,11 +180,15 @@ func shouldApplyQueryLeftOffset(source autocompleteCaretSource, start rect, star
 }
 
 func caretRectCredible(bounds rect, maxWidth int32) bool {
+	return caretRectCredibleAtDPI(bounds, maxWidth, dpiForScreenRect(bounds))
+}
+
+func caretRectCredibleAtDPI(bounds rect, maxWidth int32, dpi uintptr) bool {
 	width := bounds.Right - bounds.Left
 	height := bounds.Bottom - bounds.Top
 	// Real insertion carets are narrow and roughly one text line high. Reject
 	// control/dialog rectangles returned by incomplete accessibility providers.
-	return width >= 0 && width <= maxWidth && height > 0 && height <= 256
+	return width >= 0 && width <= int32(scaleForDPI(int(maxWidth), dpi)) && height > 0 && height <= int32(scaleForDPI(256, dpi))
 }
 
 // 部分内嵌网页/CEF 控件会把子元素的 UIA 坐标按窗口 DPI 再放大一次，
@@ -301,7 +309,11 @@ func compositionRangeIsInline(textRange *caretCOM, value string) bool {
 		return false
 	}
 	bounds, ok := textRangeBounds(textRange)
-	return ok && bounds.Right-bounds.Left > 2
+	return ok && compositionBoundsInlineAtDPI(bounds, dpiForScreenRect(bounds))
+}
+
+func compositionBoundsInlineAtDPI(bounds rect, dpi uintptr) bool {
+	return bounds.Right-bounds.Left > int32(scaleForDPI(2, dpi))
 }
 
 func compositionRangeText(textRange *caretCOM) string {
