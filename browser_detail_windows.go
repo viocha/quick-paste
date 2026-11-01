@@ -137,7 +137,7 @@ func (s *BrowserService) ShowDetail(id string, top, height int) {
 			s.detailTriggerActive = true
 			s.detailRow = row
 			if item.Kind == ClipboardImage {
-				s.detail.Image, _ = s.clipboard.previewData(id)
+				s.detail.Image, _ = s.clipboard.previewData(id, scaleForDPI(640, dpi), scaleForDPI(512, dpi))
 				s.detail.Content = ""
 			} else if text, err := s.clipboard.GetText(id); err == nil {
 				s.detail.Content = text
@@ -223,6 +223,7 @@ func (s *BrowserService) DismissDetail() {
 }
 
 func (s *BrowserService) hideDetailLocked() {
+	hadContent := s.detail.Content != "" || s.detail.Image != ""
 	s.detail.Token++
 	s.detail.Content = ""
 	s.detail.Image = ""
@@ -234,6 +235,9 @@ func (s *BrowserService) hideDetailLocked() {
 		application.InvokeSync(func() { procShowWindow.Call(uintptr(s.detailWindow.NativeWindow()), 0) })
 	}
 	s.detailVisible = false
+	if hadContent && s.detailWindow != nil {
+		s.detailWindow.EmitEvent("browser-detail", s.detail)
+	}
 }
 
 // Allow crossing the small gap to scroll long details without taking focus.

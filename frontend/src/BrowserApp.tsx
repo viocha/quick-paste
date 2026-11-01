@@ -99,13 +99,15 @@ function ClipboardThumbnail({id}: {id:string}) {
   useEffect(()=>{
     const element=host.current
     if(!element)return
+    let active=true
     const observer=new IntersectionObserver(entries=>{
       if(!entries.some(entry=>entry.isIntersecting))return
       observer.disconnect()
-      void ClipboardService.GetPreviewData(id).then(setSrc).catch(()=>{})
+      const scale=window.devicePixelRatio||1
+      void ClipboardService.GetPreviewData(id,Math.ceil(element.clientWidth*scale),Math.ceil(Math.min(element.clientHeight,96)*scale)).then(value=>{if(active)setSrc(value)}).catch(()=>{})
     })
     observer.observe(element)
-    return ()=>observer.disconnect()
+    return ()=>{active=false;observer.disconnect()}
   },[id])
   return <span ref={host} className="flex h-full min-w-0 items-center justify-center overflow-hidden">{src&&<img src={src} alt="剪贴板图片预览" className="h-full max-h-24 w-full rounded-sm object-contain"/>}</span>
 }
@@ -122,6 +124,8 @@ export function BrowserApp() {
   const [captureEnabled,setCaptureEnabled]=useState(false)
   const [pinned,setPinned]=useState(false)
   const [loading,setLoading]=useState(true)
+  const [panelVisible,setPanelVisible]=useState(true)
+  const panelVisibleRef=useRef(true)
   const [error,setError]=useState("")
   const [busy,setBusy]=useState(false)
   const [editor,setEditor]=useState<Editor|null>(null)
@@ -257,6 +261,8 @@ export function BrowserApp() {
     let active=true
     const refresh=(event?:{data?:unknown})=>{
       if(!active)return
+      panelVisibleRef.current=true
+      setPanelVisible(true)
       const requestVersion=++refreshRequestVersion.current
       resetTransient()
       const requested=event?.data === "clipboard" ? "clipboard" : event?.data === "phrase" ? "phrase" : null
@@ -272,13 +278,13 @@ export function BrowserApp() {
         if(requested||firstLoad)setShowRequestVersion(current=>current+1)
       })
     }
-    const changed=()=>{if(active)void reloadClipboard().catch(e=>setError(String(e)))}
+    const changed=()=>{if(active&&panelVisibleRef.current)void reloadClipboard().catch(e=>setError(String(e)))}
     const cancelRefresh=Events.On("browser-refresh",refresh)
     const cancelTab=Events.On("browser-tab",event=>setTab(event.data === "clipboard" ? "clipboard" : "phrase"))
     const cancelChanged=Events.On("clipboard-changed",changed)
     const cancelState=Events.On("clipboard-state-changed",changed)
-    const cancelPhrases=Events.On("phrases-changed",()=>{if(active)void reloadPhrases().catch(e=>setError(String(e)))})
-    const hidden=Events.On("browser-hidden",resetTransient)
+    const cancelPhrases=Events.On("phrases-changed",()=>{if(active&&panelVisibleRef.current)void reloadPhrases().catch(e=>setError(String(e)))})
+    const hidden=Events.On("browser-hidden",()=>{panelVisibleRef.current=false;resetTransient();setPanelVisible(false)})
     const browserKey=Events.On("browser-key",event=>{
       const key=event.data
       if(typeof key==="string")browserRootRef.current?.dispatchEvent(new KeyboardEvent("keydown",{key:key==="Find"?"f":key==="NextTab"||key==="PreviousTab"?"Tab":key,ctrlKey:key==="Find"||key==="NextTab"||key==="PreviousTab",shiftKey:key==="PreviousTab",bubbles:true,cancelable:true}))
@@ -662,7 +668,7 @@ export function BrowserApp() {
       <div className="flex justify-end"><Button variant="ghost" size="icon-sm" aria-label={pinned?"取消固定":"固定快捷面板"} onClick={()=>void BrowserService.SetPinned(!pinned).then(()=>setPinned(!pinned)).catch(e=>setError(String(e)))}>{pinned?<PinOffIcon/>:<PinIcon/>}</Button><Button variant="ghost" size="icon-sm" aria-label="打开主界面" onClick={()=>void BrowserService.OpenManager()}><AppWindowIcon/></Button><Button variant="ghost" size="icon-sm" aria-label="关闭快捷面板" onClick={()=>void BrowserService.Hide()}><XIcon/></Button></div>
       <span aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 border-b"/>
     </header>
-    <TabsContent value={tab} className="flex min-h-0 flex-1 flex-col">{panelContent}</TabsContent>
+    <TabsContent value={tab} className="flex min-h-0 flex-1 flex-col">{panelVisible&&panelContent}</TabsContent>
     {tab==="phrase"&&editorView}
     {tab==="phrase"&&moveView}
   </Tabs>

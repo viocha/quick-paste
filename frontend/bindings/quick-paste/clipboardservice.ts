@@ -29,8 +29,8 @@ export function GetLimits(): $CancellablePromise<$models.ClipboardLimits> {
     return $Call.ByID(3546976461);
 }
 
-export function GetPreviewData(id: string): $CancellablePromise<string> {
-    return $Call.ByID(2212668231, id);
+export function GetPreviewData(id: string, width: number, height: number): $CancellablePromise<string> {
+    return $Call.ByID(2212668231, id, width, height);
 }
 
 export function GetStats(): $CancellablePromise<$models.ClipboardStats> {

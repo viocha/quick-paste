@@ -87,6 +87,7 @@ type ClipboardService struct {
 	browser         *BrowserService
 	mu              sync.Mutex
 	clipboardMu     sync.Mutex
+	previewMu       sync.Mutex
 	enabled         bool
 	done            chan struct{}
 	listenerThread  uint32
@@ -620,11 +621,13 @@ func (s *ClipboardService) GetText(id string) (string, error) {
 	return "", errors.New("此项目没有纯文本内容")
 }
 
-func (s *ClipboardService) GetPreviewData(id string) (string, error) {
-	return s.previewData(id)
+func (s *ClipboardService) GetPreviewData(id string, width, height int) (string, error) {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	return s.previewData(id, width, height)
 }
 
-func (s *ClipboardService) previewData(id string) (string, error) {
+func (s *ClipboardService) previewData(id string, width, height int) (string, error) {
 	item, formats, err := s.store.Payload(id)
 	if err != nil {
 		return "", err
@@ -636,30 +639,7 @@ func (s *ClipboardService) previewData(id string) (string, error) {
 	if len(dib) == 0 {
 		dib = formats[cfDIB]
 	}
-	if len(dib) < 40 {
-		return "", errors.New("图片格式已损坏")
-	}
-	headerSize := binary.LittleEndian.Uint32(dib[:4])
-	if headerSize < 40 || int(headerSize) > len(dib) {
-		return "", errors.New("图片格式已损坏")
-	}
-	bitCount := binary.LittleEndian.Uint16(dib[14:16])
-	compression := binary.LittleEndian.Uint32(dib[16:20])
-	colors := binary.LittleEndian.Uint32(dib[32:36])
-	if colors == 0 && bitCount <= 8 {
-		colors = 1 << bitCount
-	}
-	extra := colors * 4
-	if compression == 3 && headerSize == 40 {
-		extra += 12
-	}
-	pixelOffset := uint32(14) + headerSize + extra
-	bmp := make([]byte, 14+len(dib))
-	copy(bmp[14:], dib)
-	copy(bmp[:2], []byte{'B', 'M'})
-	binary.LittleEndian.PutUint32(bmp[2:6], uint32(len(bmp)))
-	binary.LittleEndian.PutUint32(bmp[10:14], pixelOffset)
-	return "data:image/bmp;base64," + base64.StdEncoding.EncodeToString(bmp), nil
+	return clipboardPreviewPNG(dib, width, height)
 }
 func (s *ClipboardService) TogglePinned(id string) error {
 	err := s.store.TogglePinned(id)
