@@ -220,7 +220,7 @@ func TestWebDAVResponseErrors(t *testing.T) {
 		{"平台响应", 403, `<!doctype html><html><head><title>Vercel Security Checkpoint</title></head><body>script</body></html>`, "HTTP 403 Forbidden — Vercel Security Checkpoint"},
 		{"文本响应", 404, " File not found\n", "HTTP 404 Not Found — File not found"},
 		{"空响应", 500, "", "HTTP 500 Internal Server Error"},
-		{"隐藏密码", 403, `{"message":"rejected secret-password"}`, "HTTP 403 Forbidden — rejected [已隐藏]"},
+		{"服务端原文", 403, `{"message":"rejected secret-password"}`, "HTTP 403 Forbidden — rejected secret-password"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -264,9 +264,6 @@ func (b *BackupService) requestURL(method string, u *url.URL, body []byte, cfg b
 	}
 	if resp.StatusCode >= 400 && !(method == "MKCOL" && resp.StatusCode == http.StatusMethodNotAllowed) {
 		message := davResponseMessage(data)
-		if cfg.Password != "" {
-			message = strings.ReplaceAll(message, cfg.Password, "[已隐藏]")
-		}
 		if message != "" {
 			return nil, resp.StatusCode, fmt.Errorf("WebDAV %s: HTTP %d %s — %s", method, resp.StatusCode, http.StatusText(resp.StatusCode), message)
 		}
