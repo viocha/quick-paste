@@ -204,13 +204,21 @@ func (b *BackupService) SaveConfig(config BackupConfig, password string) error {
 func (b *BackupService) OpenDataDirectory() error {
 	return exec.Command("explorer.exe", filepath.Dir(b.store.path)).Start()
 }
-func backupDirectory(server string) (*url.URL, error) {
+func davDirectory(server string) (*url.URL, error) {
 	u, err := url.Parse(server)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("请输入有效的 http 或 https WebDAV 目录地址，不要在地址中包含账号密码")
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/quick-paste/"
+	u.Path = strings.TrimRight(u.Path, "/") + "/"
 	u.RawPath = ""
+	return u, nil
+}
+func backupDirectory(server string) (*url.URL, error) {
+	u, err := davDirectory(server)
+	if err != nil {
+		return nil, err
+	}
+	u.Path += "quick-paste/"
 	return u, nil
 }
 func (b *BackupService) request(method, name string, body []byte) ([]byte, int, error) {
@@ -227,13 +235,16 @@ func (b *BackupService) request(method, name string, body []byte) ([]byte, int, 
 		}
 		u.Path += name
 	}
+	return b.requestURL(method, u, body, cfg)
+}
+func (b *BackupService) requestURL(method string, u *url.URL, body []byte, cfg backupSettings) ([]byte, int, error) {
 	req, err := http.NewRequestWithContext(b.ctx, method, u.String(), bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
 	req.SetBasicAuth(cfg.Username, cfg.Password)
 	if method == "PROPFIND" {
-		req.Header.Set("Depth", "1")
+		req.Header.Set("Depth", "0")
 		req.Header.Set("Content-Type", "application/xml; charset=utf-8")
 	}
 	if method == "PUT" {
@@ -308,12 +319,12 @@ func (b *BackupService) ensureDirectory() error {
 func (b *BackupService) TestConnection(config BackupConfig, password string) error {
 	config.Server = strings.TrimSpace(config.Server)
 	config.Username = strings.TrimSpace(config.Username)
-	// 仅测试当前输入，不写入配置，也不影响自动备份使用的凭据。
-	probe := &BackupService{config: backupSettings{BackupConfig: config, Password: password}, client: b.client, ctx: b.ctx}
-	if err := probe.ensureDirectory(); err != nil {
+	// 只读取填写目录本身的属性，不创建目录或写入配置。
+	u, err := davDirectory(config.Server)
+	if err != nil {
 		return err
 	}
-	_, code, err := probe.request("PROPFIND", "", []byte(`<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>`))
+	_, code, err := b.requestURL("PROPFIND", u, []byte(`<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>`), backupSettings{BackupConfig: config, Password: password})
 	if err != nil {
 		return err
 	}

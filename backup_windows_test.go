@@ -29,6 +29,13 @@ func TestWebDAVBackupRestoreAndSchedule(t *testing.T) {
 			w.WriteHeader(401)
 			return
 		}
+		if r.Method == "PROPFIND" && r.URL.Path == "/dav/" {
+			if r.Header.Get("Depth") != "0" {
+				t.Error("wrong depth")
+			}
+			w.WriteHeader(http.StatusMultiStatus)
+			return
+		}
 		if !strings.HasPrefix(r.URL.Path, "/dav/quick-paste/") {
 			t.Errorf("unexpected path %s", r.URL.Path)
 			w.WriteHeader(404)
@@ -52,7 +59,7 @@ func TestWebDAVBackupRestoreAndSchedule(t *testing.T) {
 				w.WriteHeader(404)
 			}
 		case "PROPFIND":
-			if r.Header.Get("Depth") != "1" {
+			if r.Header.Get("Depth") != "0" {
 				t.Error("wrong depth")
 			}
 			w.WriteHeader(207)
@@ -251,7 +258,7 @@ func TestWebDAVExistingDirectory(t *testing.T) {
 	}
 	defer b.stop()
 	b.config.Server = server.URL
-	if err := b.TestConnection(b.config.BackupConfig, ""); err != nil {
+	if err := b.ensureDirectory(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -263,12 +270,11 @@ func TestWebDAVTestsDraftWithoutSaving(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		if r.URL.Path != "/draft/quick-paste/" {
+		if r.URL.Path != "/draft/" {
 			t.Errorf("测试使用了错误目录 %s", r.URL.Path)
 		}
-		if r.Method == "MKCOL" {
-			w.WriteHeader(http.StatusCreated)
-			return
+		if r.Method != "PROPFIND" || r.Header.Get("Depth") != "0" {
+			t.Errorf("连接测试应读取目录本身的属性，实际请求为 %s，Depth=%s", r.Method, r.Header.Get("Depth"))
 		}
 		w.WriteHeader(http.StatusMultiStatus)
 	}))
