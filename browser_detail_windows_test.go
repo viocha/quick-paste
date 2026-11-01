@@ -2,7 +2,47 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
+)
+
+func TestBrowserDetailPreparedOnDemand(t *testing.T) {
+	first, second := &application.WebviewWindow{}, &application.WebviewWindow{}
+	window := first
+	calls := 0
+	s := &BrowserService{ensureDetailWindow: func() *application.WebviewWindow {
+		calls++
+		return window
+	}}
+	s.PrepareDetail()
+	if calls != 0 {
+		t.Fatal("隐藏面板不应创建详情窗口")
+	}
+	s.visible = true
+	s.PrepareDetail()
+	if calls != 1 || s.detailWindow != first {
+		t.Fatal("悬停准备应创建详情窗口")
+	}
+	s.detailInitialised = true
+	s.detailID = "previous"
+	token := s.detail.Token
+	s.PrepareDetail()
+	if !s.detailInitialised || s.detailID != "previous" || s.detail.Token != token {
+		t.Fatal("复用窗口不应重置当前详情")
+	}
+	window = second
+	s.PrepareDetail()
+	if s.detailWindow != second || s.detailInitialised || s.detailID != "" || s.detail.Token <= token {
+		t.Fatal("回收后创建的新窗口应清除过期详情")
+	}
+	s.dragging = true
+	s.PrepareDetail()
+	if calls != 3 {
+		t.Fatal("拖动面板时不应准备详情窗口")
+	}
+}
 
 func TestBrowserDetailSidePlacement(t *testing.T) {
 	work := rect{0, 0, 1920, 1040}

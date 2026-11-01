@@ -94,7 +94,8 @@ type hotkeyRequest struct {
 type BrowserService struct {
 	window                *application.WebviewWindow
 	detailWindow          *application.WebviewWindow
-	ensureWindows         func() (*application.WebviewWindow, *application.WebviewWindow)
+	ensureWindow          func() *application.WebviewWindow
+	ensureDetailWindow    func() *application.WebviewWindow
 	releaseWindows        func()
 	openManager           func()
 	detail                BrowserDetail
@@ -357,16 +358,15 @@ func (s *BrowserService) toggle(tab string) {
 	if ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&targetInfo))); ok != 0 {
 		targetFocus = uintptr(targetInfo.HwndFocus)
 	}
-	if s.ensureWindows != nil {
-		window, detailWindow := s.ensureWindows()
-		if window == nil || detailWindow == nil {
+	if s.ensureWindow != nil {
+		window := s.ensureWindow()
+		if window == nil {
 			return
 		}
 		browserHWND := uintptr(window.NativeWindow())
-		detailHWND := uintptr(detailWindow.NativeWindow())
 		current, _, _ := procGetForegroundWindow.Call()
 		if current != target {
-			if current != browserHWND && current != detailHWND {
+			if current != browserHWND {
 				return
 			}
 			if err := restoreWindowFocus(target, targetFocus); err != nil {
@@ -379,15 +379,7 @@ func (s *BrowserService) toggle(tab string) {
 			s.visible = false
 			s.showPending = false
 		}
-		if s.detailWindow != detailWindow {
-			s.detailInitialised = false
-			s.detailVisible = false
-			s.detailID = ""
-			s.detailTriggerActive = false
-			s.detailLeave = time.Time{}
-		}
 		s.window = window
-		s.detailWindow = detailWindow
 		s.mu.Unlock()
 	}
 	s.mu.Lock()

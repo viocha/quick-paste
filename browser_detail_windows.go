@@ -70,10 +70,31 @@ func (s *BrowserService) GetDetail() BrowserDetail {
 	return s.detail
 }
 
+// 在悬停延迟开始时准备详情窗口，与延迟计时并行。
+func (s *BrowserService) PrepareDetail() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.visible && !s.dragging {
+		s.prepareDetailLocked()
+	}
+}
+
+func (s *BrowserService) prepareDetailLocked() {
+	if s.ensureDetailWindow == nil {
+		return
+	}
+	window := s.ensureDetailWindow()
+	if s.detailWindow != window {
+		s.hideDetailLocked()
+		s.detailInitialised = false
+		s.detailWindow = window
+	}
+}
+
 func (s *BrowserService) ShowDetail(id string, top, height int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.visible || s.dragging || s.detailWindow == nil {
+	if !s.visible || s.dragging {
 		return
 	}
 	hwnd := uintptr(s.window.NativeWindow())
@@ -88,6 +109,10 @@ func (s *BrowserService) ShowDetail(id string, top, height int) {
 	user32.NewProc("GetCursorPos").Call(uintptr(unsafe.Pointer(&cursor)))
 	// Discard a delayed RPC if the pointer has already left its trigger.
 	if !containsPoint(row, cursor) {
+		return
+	}
+	s.prepareDetailLocked()
+	if s.detailWindow == nil {
 		return
 	}
 	for _, node := range s.store.List() {

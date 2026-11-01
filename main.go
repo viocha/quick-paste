@@ -193,9 +193,8 @@ func main() {
 			},
 		})
 	}
-	browser.ensureWindows = func() (*application.WebviewWindow, *application.WebviewWindow) {
-		return browserSlot.Ensure(), detailSlot.Ensure()
-	}
+	browser.ensureWindow = browserSlot.Ensure
+	browser.ensureDetailWindow = detailSlot.Ensure
 	browser.releaseWindows = func() {
 		browserSlot.Release()
 		detailSlot.Release()

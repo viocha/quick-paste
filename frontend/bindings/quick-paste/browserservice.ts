@@ -78,6 +78,13 @@ export function OpenManager(): $CancellablePromise<void> {
 }
 
 /**
+ * 在悬停延迟开始时准备详情窗口，与延迟计时并行。
+ */
+export function PrepareDetail(): $CancellablePromise<void> {
+    return $Call.ByID(1034221433);
+}
+
+/**
  * ReadyToShow is called after React has committed the loading state. Keeping
  * the native window hidden until then prevents a stale frame or blank WebView
  * surface from flashing on the first opening.
