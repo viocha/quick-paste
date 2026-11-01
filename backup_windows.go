@@ -141,8 +141,8 @@ func (b *BackupService) runScheduled(now time.Time) {
 	if !cfg.Automatic || (err == nil && now.Before(due)) {
 		return
 	}
-	// BackupNow serializes automatic and manual actions. Busy actions are retried next tick.
-	_, _ = b.BackupNow()
+	// 自动与手动备份共用操作锁，繁忙时留到下次调度重试。
+	_, _ = b.backup(true)
 }
 func (b *BackupService) begin() error {
 	if !b.operation.TryLock() {
@@ -343,6 +343,9 @@ func randomToken() string {
 	return hex.EncodeToString(data[:])
 }
 func (b *BackupService) BackupNow() (name string, err error) {
+	return b.backup(false)
+}
+func (b *BackupService) backup(automatic bool) (name string, err error) {
 	if err = b.begin(); err != nil {
 		return "", err
 	}
@@ -353,12 +356,16 @@ func (b *BackupService) BackupNow() (name string, err error) {
 		next := b.config
 		now := time.Now().UTC()
 		if err != nil {
-			next.LastError = err.Error()
+			if automatic {
+				next.LastError = err.Error()
+			}
 			if next.Automatic {
 				next.NextBackup = now.Add(15 * time.Minute).Format(time.RFC3339)
 			}
 		} else {
-			next.LastError = ""
+			if automatic {
+				next.LastError = ""
+			}
 			next.LastBackup = now.Format(time.RFC3339)
 			if next.Automatic {
 				next.NextBackup = now.Add(time.Duration(next.IntervalHours) * time.Hour).Format(time.RFC3339)

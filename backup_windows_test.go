@@ -183,10 +183,27 @@ func TestWebDAVBackupRestoreAndSchedule(t *testing.T) {
 	if _, err = restarted.BackupNow(); err == nil {
 		t.Fatal("authentication error ignored")
 	}
+	if restarted.GetState().LastError != "" {
+		t.Fatal("手动备份失败不应记录最近错误")
+	}
+	restarted.runScheduled(time.Now().Add(7 * time.Hour))
 	state := restarted.GetState()
 	due, _ := time.Parse(time.RFC3339, state.NextBackup)
 	if state.LastError == "" || time.Until(due) > 16*time.Minute || time.Until(due) < 14*time.Minute {
 		t.Fatal("failure retry not scheduled")
+	}
+	mu.Lock()
+	denied = false
+	mu.Unlock()
+	if _, err = restarted.BackupNow(); err != nil {
+		t.Fatal(err)
+	}
+	if restarted.GetState().LastError != state.LastError {
+		t.Fatal("手动备份不应修改自动备份的最近错误")
+	}
+	restarted.runScheduled(time.Now().Add(7 * time.Hour))
+	if restarted.GetState().LastError != "" {
+		t.Fatal("自动备份成功应清除最近错误")
 	}
 	if err = b.begin(); err != nil {
 		t.Fatal(err)
