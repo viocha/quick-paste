@@ -97,7 +97,7 @@ func TestWebDAVBackupRestoreAndSchedule(t *testing.T) {
 	if strings.Contains(string(exposed), "secret") {
 		t.Fatal("secret exposed")
 	}
-	if err = b.TestConnection(); err != nil {
+	if err = b.TestConnection(cfg, "secret-password"); err != nil {
 		t.Fatal(err)
 	}
 	name, err := b.BackupNow()
@@ -199,5 +199,105 @@ func TestBackupRejectsInvalidTrees(t *testing.T) {
 	}
 	if err := validateBackupNodes([]PhraseNode{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWebDAVResponseErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code int
+		body string
+		want string
+	}{
+		{"认证响应", 401, `{"error":"Invalid credentials"}`, "HTTP 401 Unauthorized — Invalid credentials"},
+		{"平台响应", 403, `<!doctype html><html><head><title>Vercel Security Checkpoint</title></head><body>script</body></html>`, "HTTP 403 Forbidden — Vercel Security Checkpoint"},
+		{"文本响应", 404, " File not found\n", "HTTP 404 Not Found — File not found"},
+		{"空响应", 500, "", "HTTP 500 Internal Server Error"},
+		{"隐藏密码", 403, `{"message":"rejected secret-password"}`, "HTTP 403 Forbidden — rejected [已隐藏]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.code)
+				fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			b, err := NewBackupService(&PhraseStore{path: filepath.Join(t.TempDir(), "phrases.json")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.stop()
+			b.config.Server = server.URL
+			b.config.Password = "secret-password"
+			_, code, err := b.request("PROPFIND", "", nil)
+			if code != tc.code || err == nil || err.Error() != "WebDAV PROPFIND: "+tc.want {
+				t.Fatalf("code=%d, err=%v", code, err)
+			}
+		})
+	}
+}
+
+func TestWebDAVExistingDirectory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "MKCOL" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusMultiStatus)
+	}))
+	defer server.Close()
+	b, err := NewBackupService(&PhraseStore{path: filepath.Join(t.TempDir(), "phrases.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.stop()
+	b.config.Server = server.URL
+	if err := b.TestConnection(b.config.BackupConfig, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWebDAVTestsDraftWithoutSaving(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, password, _ := r.BasicAuth()
+		if user != "draft-user" || password != "draft-password" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != "/draft/quick-paste/" {
+			t.Errorf("测试使用了错误目录 %s", r.URL.Path)
+		}
+		if r.Method == "MKCOL" {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusMultiStatus)
+	}))
+	defer server.Close()
+	b, err := NewBackupService(&PhraseStore{path: filepath.Join(t.TempDir(), "phrases.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.stop()
+	saved := BackupConfig{Server: "https://saved.example/dav", Username: "saved-user", IntervalHours: 6}
+	if err := b.SaveConfig(saved, "saved-password"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(b.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := BackupConfig{Server: " " + server.URL + "/draft ", Username: " draft-user ", IntervalHours: 12}
+	if err := b.TestConnection(draft, "draft-password"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.TestConnection(draft, "wrong-password"); err == nil {
+		t.Fatal("错误凭据测试成功")
+	}
+	after, err := os.ReadFile(b.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) || b.GetState().BackupConfig != saved || b.GetPassword() != "saved-password" {
+		t.Fatal("测试连接修改了已保存的配置")
 	}
 }

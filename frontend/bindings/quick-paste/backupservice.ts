@@ -37,6 +37,6 @@ export function SaveConfig(config: $models.BackupConfig, password: string): $Can
     return $Call.ByID(1617752512, config, password);
 }
 
-export function TestConnection(): $CancellablePromise<void> {
-    return $Call.ByID(3844400727);
+export function TestConnection(config: $models.BackupConfig, password: string): $CancellablePromise<void> {
+    return $Call.ByID(3844400727, config, password);
 }

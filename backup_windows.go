@@ -11,12 +11,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -239,7 +241,7 @@ func (b *BackupService) request(method, name string, body []byte) ([]byte, int, 
 	}
 	resp, err := b.client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("WebDAV 连接失败（%s）", method)
+		return nil, 0, fmt.Errorf("WebDAV 连接失败（%s）: %w", method, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBackupBytes+1))
@@ -249,17 +251,49 @@ func (b *BackupService) request(method, name string, body []byte) ([]byte, int, 
 	if len(data) > maxBackupBytes {
 		return nil, resp.StatusCode, errors.New("备份或响应超过 16 MB 限制")
 	}
+	if resp.StatusCode >= 400 && !(method == "MKCOL" && resp.StatusCode == http.StatusMethodNotAllowed) {
+		message := davResponseMessage(data)
+		if cfg.Password != "" {
+			message = strings.ReplaceAll(message, cfg.Password, "[已隐藏]")
+		}
+		if message != "" {
+			return nil, resp.StatusCode, fmt.Errorf("WebDAV %s: HTTP %d %s — %s", method, resp.StatusCode, http.StatusText(resp.StatusCode), message)
+		}
+		return nil, resp.StatusCode, fmt.Errorf("WebDAV %s: HTTP %d %s", method, resp.StatusCode, http.StatusText(resp.StatusCode))
+	}
 	return data, resp.StatusCode, nil
 }
-func davStatus(code int) error {
-	switch code {
-	case 401, 403:
-		return errors.New("WebDAV 认证失败或没有访问权限")
-	case 404:
-		return errors.New("WebDAV 目录或备份不存在")
-	default:
-		return fmt.Errorf("WebDAV 请求失败，状态码 %d", code)
+
+var davHTMLTitle = regexp.MustCompile(`(?is)<title\b[^>]*>(.*?)</title\s*>`)
+
+func davResponseMessage(data []byte) string {
+	message := strings.TrimSpace(string(data))
+	var value map[string]json.RawMessage
+	if json.Unmarshal(data, &value) == nil {
+		for _, key := range []string{"message", "error", "detail", "description"} {
+			var text string
+			if json.Unmarshal(value[key], &text) == nil && text != "" {
+				message = text
+				break
+			}
+		}
+	} else if strings.Contains(strings.ToLower(message), "<html") || strings.Contains(strings.ToLower(message), "<!doctype html") {
+		match := davHTMLTitle.FindStringSubmatch(message)
+		if len(match) == 0 {
+			return ""
+		}
+		message = html.UnescapeString(match[1])
 	}
+	message = strings.Join(strings.Fields(message), " ")
+	runes := []rune(message)
+	if len(runes) > 300 {
+		message = string(runes[:300]) + "…"
+	}
+	return message
+}
+
+func davStatus(code int) error {
+	return fmt.Errorf("WebDAV 请求失败: HTTP %d %s", code, http.StatusText(code))
 }
 func (b *BackupService) ensureDirectory() error {
 	_, code, err := b.request("MKCOL", "", nil)
@@ -271,15 +305,15 @@ func (b *BackupService) ensureDirectory() error {
 	}
 	return nil
 }
-func (b *BackupService) TestConnection() error {
-	if err := b.begin(); err != nil {
+func (b *BackupService) TestConnection(config BackupConfig, password string) error {
+	config.Server = strings.TrimSpace(config.Server)
+	config.Username = strings.TrimSpace(config.Username)
+	// 仅测试当前输入，不写入配置，也不影响自动备份使用的凭据。
+	probe := &BackupService{config: backupSettings{BackupConfig: config, Password: password}, client: b.client, ctx: b.ctx}
+	if err := probe.ensureDirectory(); err != nil {
 		return err
 	}
-	defer b.end()
-	if err := b.ensureDirectory(); err != nil {
-		return err
-	}
-	_, code, err := b.request("PROPFIND", "", []byte(`<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>`))
+	_, code, err := probe.request("PROPFIND", "", []byte(`<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>`))
 	if err != nil {
 		return err
 	}
