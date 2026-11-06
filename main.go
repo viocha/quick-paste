@@ -176,7 +176,7 @@ func main() {
 			MinWidth: 300, MinHeight: 260,
 			Hidden: true, Frameless: true, DisableResize: false, AlwaysOnTop: true,
 			BackgroundColour: application.NewRGB(255, 255, 255), URL: "/#browser",
-			Windows: application.WindowsWindow{HiddenOnTaskbar: true, ExStyle: 0x80 | 0x08},
+			Windows: application.WindowsWindow{HiddenOnTaskbar: true, ExStyle: wsExNoActivate | 0x80 | 0x08},
 		})
 	}
 	detailSlot := &lazyWindow{idleDelay: idleWindowRetention}
@@ -219,6 +219,11 @@ func main() {
 	monitor.openClipboard = func() { browser.toggle("clipboard") }
 	monitor.pasteClipboardText = clipboard.pasteTextWithRemoval
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		application.InvokeSync(func() {
+			if err := installNoActivateGuard(); err != nil {
+				log.Printf("%v", err)
+			}
+		})
 		backup.start()
 		if err := monitor.Start(); err != nil {
 			log.Printf("启动全局输入监听失败: %v", err)

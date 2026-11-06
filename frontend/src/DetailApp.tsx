@@ -1,6 +1,7 @@
 import { useTooltipDelay, useTooltipTimeout } from "./TooltipDelay"
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react"
 import { Events } from "@wailsio/runtime"
+import { cn } from "cn"
 import { BrowserService, type BrowserDetail } from "../bindings/quick-paste"
 import { Tooltip, TooltipContent, TooltipProvider } from "@/components/ui/tooltip"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -45,7 +46,7 @@ export function DetailApp() {
       <TooltipContent side={side} align="start" sideOffset={2}
         positionerProps={{anchor,collisionAvoidance:{side:"none",align:"none"}}}
         arrowStyle={{top:Math.max(6,(detail.arrowY||16)-8)}}
-        className="block w-[calc(100vw-16px)] max-w-none">
+        className={cn("block w-[calc(100vw-16px)] max-w-none",detail.image&&"p-1.5")}>
         {detail.scrollable ? <ScrollArea className="w-full" scrollbarClassName="right-[-10px]! z-[60]" style={{"--detail-insets":`${insets}px`} as CSSProperties} viewportClassName="max-h-[calc(100svh-var(--detail-insets))]">
           <div ref={setContent}>{detail.image&&<img src={detail.image} alt="剪贴板图片预览" className="max-h-128 w-full object-contain"/>}{previewText&&<div className="whitespace-pre-wrap break-words">{previewText}</div>}</div>
         </ScrollArea> : <div ref={setContent}>{detail.image&&<img src={detail.image} alt="剪贴板图片预览" className="max-h-128 w-full object-contain"/>}{previewText&&<div className="whitespace-pre-wrap break-words">{previewText}</div>}</div>}

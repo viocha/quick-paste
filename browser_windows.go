@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"runtime"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"unsafe"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/w32"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -369,9 +371,6 @@ func (s *BrowserService) toggle(tab string) {
 			if current != browserHWND {
 				return
 			}
-			if err := restoreWindowFocus(target, targetFocus); err != nil {
-				return
-			}
 		}
 		s.mu.Lock()
 		if s.window != window {
@@ -466,11 +465,11 @@ func (s *BrowserService) ReadyToShow() {
 			s.initialised = true
 		}
 		procShowWindow.Call(hwnd, 4)
-		procSetLayeredWindowAttributes.Call(hwnd, 0, 255, lwaAlpha)
-		current, _, _ := procGetForegroundWindow.Call()
-		if current == hwnd && s.target != 0 {
-			procSetForegroundWindow.Call(s.target)
+		// 不激活显示不会触发 Wails 的窗口装饰初始化，需显式启用原生阴影和圆角。
+		if err := w32.ExtendFrameIntoClientArea(hwnd, true); err != nil {
+			log.Printf("初始化快捷面板窗口装饰失败: %v", err)
 		}
+		procSetLayeredWindowAttributes.Call(hwnd, 0, 255, lwaAlpha)
 		procSetWindowLongW.Call(hwnd, indexArg, visibleStyle&^wsExNoActivate)
 	})
 	s.showPending = false
