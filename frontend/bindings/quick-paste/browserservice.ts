@@ -85,9 +85,7 @@ export function PrepareDetail(): $CancellablePromise<void> {
 }
 
 /**
- * ReadyToShow is called after React has committed the loading state. Keeping
- * the native window hidden until then prevents a stale frame or blank WebView
- * surface from flashing on the first opening.
+ * ReadyToShow 在 React 提交内容后调用；此前窗口保持透明，避免显示空白或残留画面。
  */
 export function ReadyToShow(): $CancellablePromise<void> {
     return $Call.ByID(1912236400);

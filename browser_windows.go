@@ -375,9 +375,19 @@ func (s *BrowserService) toggle(tab string) {
 		}
 		s.mu.Lock()
 		if s.window != window {
-			s.initialised = false
 			s.visible = false
 			s.showPending = false
+			// WebView2 隐藏时会暂停渲染；先透明显示，让前端能完成加载并发送就绪通知。
+			// NOACTIVATE 和 TRANSPARENT 保证预热期间不抢焦点，也不拦截鼠标。
+			application.InvokeSync(func() {
+				index := int32(gwlExStyle)
+				indexArg := uintptr(uint32(index))
+				style, _, _ := procGetWindowLongW.Call(browserHWND, indexArg)
+				procSetWindowLongW.Call(browserHWND, indexArg, style|wsExLayered|wsExTransparent|wsExNoActivate)
+				procSetLayeredWindowAttributes.Call(browserHWND, 0, 0, lwaAlpha)
+				window.Show()
+			})
+			s.initialised = true
 		}
 		s.window = window
 		s.mu.Unlock()
@@ -426,9 +436,7 @@ func (s *BrowserService) toggle(tab string) {
 	s.window.EmitEvent("browser-refresh", tab)
 }
 
-// ReadyToShow is called after React has committed the loading state. Keeping
-// the native window hidden until then prevents a stale frame or blank WebView
-// surface from flashing on the first opening.
+// ReadyToShow 在 React 提交内容后调用；此前窗口保持透明，避免显示空白或残留画面。
 func (s *BrowserService) ReadyToShow() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
