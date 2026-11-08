@@ -26,6 +26,14 @@ var (
 	sysFreeString              = oleaut32.NewProc("SysFreeString")
 	accessibleObjectFromWindow = windows.NewLazySystemDLL("oleacc.dll").NewProc("AccessibleObjectFromWindow")
 	getWindowRect              = user32.NewProc("GetWindowRect")
+	procQueryProcessImageName  = windows.NewLazySystemDLL("kernel32.dll").NewProc("QueryFullProcessImageNameW")
+	edgeGDI                    = windows.NewLazySystemDLL("gdi32.dll")
+	procEdgeCreateFont         = edgeGDI.NewProc("CreateFontW")
+	procEdgeCreateDC           = edgeGDI.NewProc("CreateCompatibleDC")
+	procEdgeSelectObject       = edgeGDI.NewProc("SelectObject")
+	procEdgeGetTextExtent      = edgeGDI.NewProc("GetTextExtentPoint32W")
+	procEdgeDeleteObject       = edgeGDI.NewProc("DeleteObject")
+	procEdgeDeleteDC           = edgeGDI.NewProc("DeleteDC")
 )
 
 // COM slots below follow the Windows SDK UIAutomationClient.h and oleacc.h.
@@ -87,6 +95,7 @@ const (
 	autocompleteCaretCompositionInline
 	autocompleteCaretWin32
 	autocompleteCaretAutomation
+	autocompleteCaretAutomationQueryRange
 	autocompleteCaretAccessible
 )
 
@@ -98,6 +107,13 @@ func autocompleteCaretScreenRect(query string) (rect, bool) {
 }
 
 func autocompleteCaretScreenAnchor(query string) (rect, autocompleteCaretSource, bool) {
+	// Edge 地址栏在英文和中文预编辑时可能返回虚假的零长度
+	// UIA 光标。优先根据输入框的 ValuePattern 计算补全前缀起点。
+	if query != "" && foregroundIsEdge() {
+		if bounds, ok := edgeOmniboxQueryStart(query); ok {
+			return bounds, autocompleteCaretAutomationQueryRange, true
+		}
+	}
 	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
 	ok, _, _ := procGetGUIThreadInfo.Call(0, uintptr(unsafe.Pointer(&info)))
 	// During IME composition the Win32 caret often stays at the beginning of the
@@ -121,7 +137,10 @@ func autocompleteCaretScreenAnchor(query string) (rect, autocompleteCaretSource,
 	hr, _, _ := coInitializeEx.Call(0, 0)
 	if int32(hr) >= 0 {
 		defer coUninitialize.Call()
-		if bounds, found := automationCaret(query); found && caretRectCredible(bounds, 64) {
+		if bounds, queryRange, found := automationCaret(query); found && caretRectCredible(bounds, 64) {
+			if queryRange {
+				return bounds, autocompleteCaretAutomationQueryRange, true
+			}
 			return bounds, autocompleteCaretAutomation, true
 		}
 		for _, hwnd := range []uintptr{uintptr(info.HwndFocus), 0} {
@@ -169,7 +188,9 @@ func shouldApplyQueryLeftOffset(source autocompleteCaretSource, start rect, star
 	switch source {
 	case autocompleteCaretCompositionInline:
 		return true
-	case autocompleteCaretComposition:
+	case autocompleteCaretComposition, autocompleteCaretAutomationQueryRange:
+		// The UIA query range already starts at the rendered prefix; do not
+		// subtract the legacy fixed-width compensation a second time.
 		return false
 	case autocompleteCaretWin32:
 		return startValid && queryMovedEditorCaret(start, current)
@@ -369,27 +390,38 @@ func automationFocusedQueryVisible(query string) bool {
 	return false
 }
 
-func textBeforeCaret(pattern *caretCOM, query string) string {
+func textRangeBeforeCaret(pattern *caretCOM, query string) (*caretCOM, bool) {
+	if pattern == nil || query == "" {
+		return nil, false
+	}
 	var ranges *caretCOM
 	if !pattern.call(5, uintptr(unsafe.Pointer(&ranges))) || ranges == nil {
-		return ""
+		return nil, false
 	}
 	defer ranges.release()
 	var count int32
 	if !ranges.call(3, uintptr(unsafe.Pointer(&count))) || count != 1 {
-		return ""
+		return nil, false
 	}
 	var textRange *caretCOM
 	if !ranges.call(4, 0, uintptr(unsafe.Pointer(&textRange))) || textRange == nil {
-		return ""
+		return nil, false
 	}
-	defer textRange.release()
 	if !textRange.call(15, 0, uintptr(unsafe.Pointer(textRange)), 1) {
-		return ""
+		textRange.release()
+		return nil, false
 	}
-	var moved int32
 	length := int32(len(utf16.Encode([]rune(query))))
-	if !textRange.call(14, 0, 0, uintptr(uint32(-length)), uintptr(unsafe.Pointer(&moved))) {
+	var moved int32
+	if length == 0 || !textRange.call(14, 0, 0, uintptr(uint32(-length)), uintptr(unsafe.Pointer(&moved))) {
+		textRange.release()
+		return nil, false
+	}
+	return textRange, true
+}
+
+func textRangeText(textRange *caretCOM, length int32) string {
+	if textRange == nil || length <= 0 {
 		return ""
 	}
 	var value uintptr
@@ -400,20 +432,84 @@ func textBeforeCaret(pattern *caretCOM, query string) string {
 	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(value)))
 }
 
-func automationCaret(query string) (rect, bool) {
+func textRangeQueryBounds(pattern *caretCOM, query string) (rect, bool) {
+	length := int32(len(utf16.Encode([]rune(query))))
+	textRange, ok := textRangeBeforeCaret(pattern, query)
+	if !ok {
+		return rect{}, false
+	}
+	defer textRange.release()
+	if textRangeText(textRange, length) != query {
+		return rect{}, false
+	}
+	bounds, ok := textRangeBounds(textRange)
+	if !ok || bounds.Right <= bounds.Left || bounds.Bottom <= bounds.Top {
+		return rect{}, false
+	}
+	return bounds, true
+}
+
+func textBeforeCaret(pattern *caretCOM, query string) string {
+	length := int32(len(utf16.Encode([]rune(query))))
+	textRange, ok := textRangeBeforeCaret(pattern, query)
+	if !ok {
+		return ""
+	}
+	defer textRange.release()
+	return textRangeText(textRange, length)
+}
+
+// textBeforeCaretAll 返回当前插入点之前的文本，不依赖插入点位于整段文本末尾。
+// 先确认选区已折叠，再将范围起点移动到文档开头；不会改变真实输入框的选区。
+func textBeforeCaretAll(pattern *caretCOM, maxCharacters int32) (string, bool) {
+	if pattern == nil || maxCharacters <= 0 {
+		return "", false
+	}
+	var ranges *caretCOM
+	if !pattern.call(5, uintptr(unsafe.Pointer(&ranges))) || ranges == nil {
+		return "", false
+	}
+	defer ranges.release()
+	var count int32
+	if !ranges.call(3, uintptr(unsafe.Pointer(&count))) || count != 1 {
+		return "", false
+	}
+	var textRange *caretCOM
+	if !ranges.call(4, 0, uintptr(unsafe.Pointer(&textRange))) || textRange == nil {
+		return "", false
+	}
+	defer textRange.release()
+
+	var comparison int32
+	if !textRange.call(5, 0, uintptr(unsafe.Pointer(textRange)), 1, uintptr(unsafe.Pointer(&comparison))) || comparison != 0 {
+		return "", false
+	}
+	var moved int32
+	if !textRange.call(14, 0, 0, uintptr(int32(-maxCharacters)), uintptr(unsafe.Pointer(&moved))) {
+		return "", false
+	}
+	var value uintptr
+	if !textRange.call(12, uintptr(^uint32(0)), uintptr(unsafe.Pointer(&value))) || value == 0 {
+		return "", false
+	}
+	defer sysFreeString.Call(value)
+	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(value))), true
+}
+
+func automationCaret(query string) (rect, bool, bool) {
 	var automation *caretCOM
 	hr, _, _ := coCreateInstance.Call(uintptr(unsafe.Pointer(clsidAutomation)), 0, 1, uintptr(unsafe.Pointer(iidAutomation)), uintptr(unsafe.Pointer(&automation)))
 	if int32(hr) < 0 || automation == nil {
-		return rect{}, false
+		return rect{}, false, false
 	}
 	defer automation.release()
 	var element *caretCOM
 	if !automation.call(8, uintptr(unsafe.Pointer(&element))) || element == nil {
-		return rect{}, false
+		return rect{}, false, false
 	}
 	defer element.release()
 	// Chromium/CEF 等自绘输入框往往能通过 IA2 给出字符级光标位置，
-	// 而 UIA TextPattern 在部分应用中会返回整个输入框或其他错误矩形。
+	// 而 UIA TextPattern 的零长度选区矩形可能错误地落在输入框左边界。
 	var isPassword int32
 	var elementBounds rect
 	passwordOK := element.call(35, uintptr(unsafe.Pointer(&isPassword)))
@@ -423,17 +519,17 @@ func automationCaret(query string) (rect, bool) {
 		// Prefer the accessible object attached to the focused UIA element itself.
 		// Windowless embedded editors can expose IAccessibleText here even when a
 		// coordinate hit-test only returns a parent/document accessible object.
-		if caret, ok := ia2CaretFromUIAElement(element, elementBounds); ok {
-			return caret, true
+		if caret, ok := ia2CaretFromUIAElement(element, elementBounds, query); ok {
+			return caret, false, true
 		}
-		if caret, ok := ia2CaretFromElement(elementBounds); ok {
-			return caret, true
+		if caret, ok := ia2CaretFromElement(elementBounds, query); ok {
+			return caret, false, true
 		}
 	}
 	// 密码控件的 UIA TextPattern 选择范围尤其不可信；IA2 失败后不要再
 	// 把输入框本身或 TextPattern 返回的大矩形伪装成插入点。
 	if passwordOK && isPassword != 0 {
-		return rect{}, false
+		return rect{}, false, false
 	}
 	for _, spec := range []struct {
 		id  uintptr
@@ -443,10 +539,27 @@ func automationCaret(query string) (rect, bool) {
 		if !element.call(14, spec.id, uintptr(unsafe.Pointer(spec.iid)), uintptr(unsafe.Pointer(&pattern))) || pattern == nil {
 			continue
 		}
+		if query != "" {
+			if bounds, ok := textRangeQueryBounds(pattern, query); ok {
+				pattern.release()
+				if edgeOmniboxLikely(elementBounds) {
+					// Edge 地址栏的零长度选区可能只是左侧内边距的
+					// 伪光标；优先在统一的 Edge 地址栏分支计算查询起点。
+					if anchor, ok := edgeOmniboxMeasuredCaret(element, elementBounds, bounds, query); ok {
+						return anchor, true, true
+					}
+					// A genuinely sized text range ends at the insertion point.
+					if bounds.Right-bounds.Left >= int32(scaleForDPI(12, dpiForScreenRect(bounds))) {
+						bounds.Left = bounds.Right
+					}
+				}
+				return bounds, true, true
+			}
+		}
 		bounds, ok := patternCaret(pattern, spec.id == 10024)
 		pattern.release()
 		if ok {
-			return bounds, true
+			return bounds, false, true
 		}
 	}
 	// Some embedded web controls expose neither TextPattern nor IA2 caret APIs,
@@ -455,12 +568,307 @@ func automationCaret(query string) (rect, bool) {
 	// exact query we just observed, so editing in the middle cannot be misplaced.
 	if boundsOK && query != "" {
 		if caret, ok := automationTextDescendantCaret(automation, element, elementBounds, query); ok {
-			return caret, true
+			return caret, false, true
 		}
 	}
-	return rect{}, false
+	return rect{}, false, false
 }
 
+// edgeOmniboxLikely deliberately limits the measured fallback to Edge's
+// toolbar-sized address bar. Other editors retain their provider coordinates.
+func edgeOmniboxLikely(bounds rect) bool {
+	if !foregroundIsEdge() {
+		return false
+	}
+	dpi := dpiForScreenRect(bounds)
+	if bounds.Right-bounds.Left < int32(scaleForDPI(320, dpi)) ||
+		bounds.Bottom-bounds.Top > int32(scaleForDPI(48, dpi)) {
+		return false
+	}
+	host, _, ok := focusedWindowMetrics()
+	return ok && bounds.Top >= host.Top &&
+		bounds.Top-host.Top < int32(scaleForDPI(170, dpi))
+}
+
+func foregroundIsEdge() bool {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return false
+	}
+	var pid uint32
+	procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if pid == 0 {
+		return false
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(handle)
+	var name [512]uint16
+	length := uint32(len(name))
+	ok, _, _ := procQueryProcessImageName.Call(uintptr(handle), 0, uintptr(unsafe.Pointer(&name[0])), uintptr(unsafe.Pointer(&length)))
+	return ok != 0 && strings.HasSuffix(strings.ToLower(windows.UTF16ToString(name[:length])), "\\msedge.exe")
+}
+
+// Edge Ctrl+F 搜索框位于浏览器自己的独立 owned window 中。
+// 其 TextRange 几何可能退化为控件左上角，因此使用插入点前的实际文本计算 X，
+// Y 则使用单行文本在输入框内的垂直位置。
+func edgeFindBarQueryState(query string) (anchor rect, target, valid bool) {
+	foreground, _, _ := procGetForegroundWindow.Call()
+	if foreground == 0 {
+		return rect{}, false, false
+	}
+	owner, _, _ := user32.NewProc("GetWindow").Call(foreground, 4) // GW_OWNER
+	if owner == 0 {
+		return rect{}, false, false
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hr, _, _ := coInitializeEx.Call(0, 0)
+	if int32(hr) < 0 {
+		return rect{}, false, false
+	}
+	defer coUninitialize.Call()
+
+	var automation *caretCOM
+	hr, _, _ = coCreateInstance.Call(uintptr(unsafe.Pointer(clsidAutomation)), 0, 1, uintptr(unsafe.Pointer(iidAutomation)), uintptr(unsafe.Pointer(&automation)))
+	if int32(hr) < 0 || automation == nil {
+		return rect{}, false, false
+	}
+	defer automation.release()
+
+	var element *caretCOM
+	if !automation.call(8, uintptr(unsafe.Pointer(&element))) || element == nil {
+		return rect{}, false, false
+	}
+	defer element.release()
+
+	className, ok := automationElementCurrentString(element, 30) // CurrentClassName
+	if !ok {
+		return rect{}, false, false
+	}
+	name, ok := automationElementCurrentString(element, 23) // CurrentName
+	if !ok || !edgeFindBarFieldIdentified(className, name) {
+		return rect{}, false, false
+	}
+
+	var control rect
+	if !element.call(43, uintptr(unsafe.Pointer(&control))) {
+		return rect{}, true, false
+	}
+	control = normalizeAccessibilityRect(control)
+	var popup rect
+	if got, _, _ := getWindowRect.Call(foreground, uintptr(unsafe.Pointer(&popup))); got == 0 ||
+		!rectCenterInside(control, popup) {
+		return rect{}, true, false
+	}
+
+	value, ok := automationElementValue(element)
+	if !ok || len([]rune(value)) > 128 {
+		return rect{}, true, false
+	}
+	var pattern *caretCOM
+	if !element.call(14, 10014, uintptr(unsafe.Pointer(iidText)), uintptr(unsafe.Pointer(&pattern))) || pattern == nil {
+		return rect{}, true, false
+	}
+	beforeCaret, readOK := textBeforeCaretAll(pattern, 128)
+	pattern.release()
+	if !readOK {
+		return rect{}, true, false
+	}
+	prefix, prefixOK := edgeFindBarPrefixBeforeCaret(value, beforeCaret, query)
+	if !prefixOK {
+		return rect{}, true, false
+	}
+	anchor, valid = edgeFindBarQueryStartFromPrefixAtDPI(control, prefix, dpiForScreenRect(control))
+	return anchor, true, valid
+}
+
+func automationElementCurrentString(element *caretCOM, slot int) (string, bool) {
+	var value uintptr
+	if !element.call(slot, uintptr(unsafe.Pointer(&value))) || value == 0 {
+		return "", false
+	}
+	defer sysFreeString.Call(value)
+	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(value))), true
+}
+
+func edgeFindBarFieldIdentified(className, name string) bool {
+	label := strings.ToLower(name)
+	return className == "Textfield" &&
+		(strings.Contains(label, "查找") || strings.Contains(label, "find"))
+}
+
+func edgeFindBarQueryStartFromValue(control rect, value, query string) (rect, bool) {
+	return edgeFindBarQueryStartFromValueAtDPI(control, value, query, dpiForScreenRect(control))
+}
+
+func edgeFindBarPrefixBeforeCaret(value, beforeCaret, query string) (string, bool) {
+	if query == "" || len([]rune(value)) > 128 || len([]rune(beforeCaret)) > 128 ||
+		!strings.HasPrefix(value, beforeCaret) || !strings.HasSuffix(beforeCaret, query) {
+		return "", false
+	}
+	return strings.TrimSuffix(beforeCaret, query), true
+}
+
+func edgeFindBarQueryStartFromValueAtDPI(control rect, value, query string, dpi uintptr) (rect, bool) {
+	if query == "" || !strings.HasSuffix(value, query) || len([]rune(value)) > 128 {
+		return rect{}, false
+	}
+	return edgeFindBarQueryStartFromPrefixAtDPI(control, strings.TrimSuffix(value, query), dpi)
+}
+
+func edgeFindBarQueryStartFromPrefixAtDPI(control rect, prefix string, dpi uintptr) (rect, bool) {
+	if len([]rune(prefix)) > 128 || control.Bottom <= control.Top {
+		return rect{}, false
+	}
+	inset := int32(scaleForDPI(6, dpi))
+	x := control.Left + inset
+	if prefix != "" {
+		width, ok := measureEdgeFindBarText(prefix, dpi)
+		if !ok {
+			return rect{}, false
+		}
+		x += width
+	}
+	height := control.Bottom - control.Top
+	lineHeight := int32(scaleForDPI(11, dpi))
+	if lineHeight <= 0 || control.Right-control.Left <= inset*2 {
+		return rect{}, false
+	}
+	if lineHeight > height {
+		lineHeight = height
+	}
+	if x < control.Left || x >= control.Right-inset {
+		return rect{}, false
+	}
+	top := control.Top + (height-lineHeight)/2
+	return rect{Left: x, Top: top, Right: x + 1, Bottom: top + lineHeight}, true
+}
+
+// Edge 的无障碍数据在中文预编辑与英文提交时都包含可见文本。
+// 两种模式统一取前缀起点，不读取候选窗口的坐标或尺寸。
+func edgeOmniboxQueryStart(query string) (rect, bool) {
+	anchor, _, ok := edgeOmniboxQueryState(query)
+	return anchor, ok
+}
+
+// target 表示当前确实聚焦在 Edge 地址栏。即使 ValuePattern
+// 尚未更新，也不能把其它 UIA 伪光标当作地址栏插入点。
+func edgeOmniboxQueryState(query string) (anchor rect, target, valid bool) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	hr, _, _ := coInitializeEx.Call(0, 0)
+	if int32(hr) < 0 {
+		return rect{}, false, false
+	}
+	defer coUninitialize.Call()
+
+	var automation *caretCOM
+	hr, _, _ = coCreateInstance.Call(uintptr(unsafe.Pointer(clsidAutomation)), 0, 1, uintptr(unsafe.Pointer(iidAutomation)), uintptr(unsafe.Pointer(&automation)))
+	if int32(hr) < 0 || automation == nil {
+		return rect{}, false, false
+	}
+	defer automation.release()
+
+	var element *caretCOM
+	if !automation.call(8, uintptr(unsafe.Pointer(&element))) || element == nil {
+		return rect{}, false, false
+	}
+	defer element.release()
+
+	var control rect
+	if !element.call(43, uintptr(unsafe.Pointer(&control))) {
+		return rect{}, false, false
+	}
+	control = normalizeAccessibilityRect(control)
+	if !edgeOmniboxLikely(control) {
+		return rect{}, false, false
+	}
+	value, ok := automationElementValue(element)
+	if !ok {
+		return rect{}, true, false
+	}
+	anchor, valid = edgeOmniboxQueryStartFromValue(control, value, query)
+	return anchor, true, valid
+}
+func edgeOmniboxQueryStartFromValue(control rect, value, query string) (rect, bool) {
+	return edgeOmniboxQueryStartFromValueAtDPI(control, value, query, dpiForScreenRect(control))
+}
+
+func edgeOmniboxQueryStartFromValueAtDPI(control rect, value, query string, dpi uintptr) (rect, bool) {
+	if query == "" || !strings.HasSuffix(value, query) || len([]rune(value)) > 128 {
+		return rect{}, false
+	}
+	inset := int32(scaleForDPI(4, dpi))
+	x := control.Left + inset
+	prefix := strings.TrimSuffix(value, query)
+	if prefix != "" {
+		width, ok := measureEdgeOmniboxText(prefix, dpi)
+		if !ok {
+			return rect{}, false
+		}
+		x += width
+	}
+	// 仅用于未发生横向滚动的地址栏：光标的屏幕坐标必须在控件内。
+	if x < control.Left || x >= control.Right-inset ||
+		control.Bottom-control.Top <= inset*2 {
+		return rect{}, false
+	}
+	return rect{Left: x, Top: control.Top + inset, Right: x + 1, Bottom: control.Bottom - inset}, true
+}
+
+// 兼容 UIA TextRange 返回零宽度矩形的 Edge 地址栏。查询起点
+// 只取 query 之前的字符宽度，避免把 query 自身宽度算进去。
+func edgeOmniboxMeasuredCaret(element *caretCOM, control, bounds rect, query string) (rect, bool) {
+	dpi := dpiForScreenRect(control)
+	if bounds.Right-bounds.Left >= int32(scaleForDPI(12, dpi)) {
+		return rect{}, false
+	}
+	value, ok := automationElementValue(element)
+	if !ok {
+		return rect{}, false
+	}
+	return edgeOmniboxQueryStartFromValue(control, value, query)
+}
+func measureEdgeOmniboxText(value string, dpi uintptr) (int32, bool) {
+	return measureEdgeText(value, dpi, 14)
+}
+
+func measureEdgeFindBarText(value string, dpi uintptr) (int32, bool) {
+	return measureEdgeText(value, dpi, 11)
+}
+
+func measureEdgeText(value string, dpi uintptr, logicalFontHeight int) (int32, bool) {
+	if value == "" || logicalFontHeight <= 0 {
+		return 0, false
+	}
+	face, _ := windows.UTF16PtrFromString("Segoe UI")
+	height := int32(scaleForDPI(logicalFontHeight, dpi))
+	font, _, _ := procEdgeCreateFont.Call(
+		uintptr(int64(-height)), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
+		uintptr(unsafe.Pointer(face)))
+	if font == 0 {
+		return 0, false
+	}
+	defer procEdgeDeleteObject.Call(font)
+	dc, _, _ := procEdgeCreateDC.Call(0)
+	if dc == 0 {
+		return 0, false
+	}
+	defer procEdgeDeleteDC.Call(dc)
+	original, _, _ := procEdgeSelectObject.Call(dc, font)
+	if original == 0 {
+		return 0, false
+	}
+	defer procEdgeSelectObject.Call(dc, original)
+	chars := utf16.Encode([]rune(value))
+	var size struct{ Width, Height int32 }
+	ok, _, _ := procEdgeGetTextExtent.Call(dc, uintptr(unsafe.Pointer(&chars[0])), uintptr(len(chars)), uintptr(unsafe.Pointer(&size)))
+	return size.Width, ok != 0
+}
 func automationTextDescendantCaret(automation, element *caretCOM, elementBounds rect, query string) (rect, bool) {
 	if automation == nil || element == nil || query == "" {
 		return rect{}, false

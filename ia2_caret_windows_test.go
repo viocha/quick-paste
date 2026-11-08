@@ -106,3 +106,100 @@ func TestIA2PasswordTextHasPrefix(t *testing.T) {
 		t.Fatal("缺少 IA2 提供者时不能判断前缀已上屏")
 	}
 }
+
+func TestIA2TextBeforeCaretMatchesQuery(t *testing.T) {
+	var offset, selections int32
+	var content, query string
+	var failedSlot int
+	var reads int
+	table := &[64]uintptr{}
+	table[5] = syscall.NewCallback(func(_ uintptr, out uintptr) uintptr {
+		if failedSlot == 5 {
+			return 0x80004005
+		}
+		*(*int32)(unsafe.Pointer(out)) = offset
+		return 0
+	})
+	table[7] = syscall.NewCallback(func(_ uintptr, out uintptr) uintptr {
+		if failedSlot == 7 {
+			return 0x80004005
+		}
+		*(*int32)(unsafe.Pointer(out)) = selections
+		return 0
+	})
+	table[10] = syscall.NewCallback(func(_ uintptr, start, end, out uintptr) uintptr {
+		reads++
+		length := int32(len(utf16.Encode([]rune(query))))
+		if int32(start) != offset-length || int32(end) != offset {
+			t.Errorf("读取范围 = [%d, %d)，期望 [%d, %d)", start, end, offset-length, offset)
+		}
+		if failedSlot == 10 {
+			return 0x80004005
+		}
+		encoded := utf16.Encode([]rune(content))
+		var data *uint16
+		if len(encoded) > 0 {
+			data = &encoded[0]
+		}
+		value, _, _ := oleaut32.NewProc("SysAllocStringLen").Call(uintptr(unsafe.Pointer(data)), uintptr(len(encoded)))
+		*(*uintptr)(unsafe.Pointer(out)) = value
+		return 0
+	})
+	text := &caretCOM{vtable: table}
+	for _, tc := range []struct {
+		name, value, query string
+		offset, selections int32
+		failedSlot         int
+		want               bool
+		wantReads          int
+	}{
+		{"光标紧跟查询文本", "Lai", "Lai", 3, 0, 0, true, 1},
+		{"多行编辑器错误地报告文本起点", "", "Lai", 0, 0, 0, false, 0},
+		{"光标前字符不足", "", "Lai", 2, 0, 0, false, 0},
+		{"光标前文本不匹配", "abc", "Lai", 3, 0, 0, false, 1},
+		{"存在选区", "Lai", "Lai", 3, 1, 0, false, 0},
+		{"读取光标偏移失败", "", "Lai", 3, 0, 5, false, 0},
+		{"读取选区失败", "", "Lai", 3, 0, 7, false, 0},
+		{"读取文本失败", "", "Lai", 3, 0, 10, false, 1},
+		{"按 UTF16 偏移读取", "😀b", "😀b", 4, 0, 0, true, 1},
+		{"空查询", "", "", 3, 0, 0, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			offset, selections, content, query, failedSlot, reads = tc.offset, tc.selections, tc.value, tc.query, tc.failedSlot, 0
+			if got := ia2TextBeforeCaretMatchesQuery(text, query); got != tc.want {
+				t.Fatalf("查询前缀判断 = %v，期望 %v", got, tc.want)
+			}
+			if reads != tc.wantReads {
+				t.Fatalf("文本读取次数 = %d，期望 %d", reads, tc.wantReads)
+			}
+		})
+	}
+	if ia2TextBeforeCaretMatchesQuery(nil, "Lai") {
+		t.Fatal("缺少 IA2 提供者时不能验证查询前缀")
+	}
+}
+
+func TestIA2CaretRejectsStaleOffsetBeforeQuery(t *testing.T) {
+	var offset, selections int32
+	var extentsCalls int
+	table := &[64]uintptr{}
+	table[5] = syscall.NewCallback(func(_ uintptr, out uintptr) uintptr {
+		*(*int32)(unsafe.Pointer(out)) = offset
+		return 0
+	})
+	table[7] = syscall.NewCallback(func(_ uintptr, out uintptr) uintptr {
+		*(*int32)(unsafe.Pointer(out)) = selections
+		return 0
+	})
+	table[6] = syscall.NewCallback(func(_ uintptr, _ uintptr, _ uintptr, _ uintptr, _ uintptr, _ uintptr, _ uintptr) uintptr {
+		extentsCalls++
+		return 0
+	})
+	text := &caretCOM{vtable: table}
+	if _, ok := ia2CaretFromText(text, rect{Left: 100, Top: 100, Right: 500, Bottom: 300}, "Lai"); ok {
+		t.Fatal("IA2 把文本起点误报为光标时，不得接受其字符坐标")
+	}
+	if extentsCalls != 0 {
+		t.Fatalf("错误偏移不应查询字符坐标，调用次数 = %d", extentsCalls)
+	}
+}

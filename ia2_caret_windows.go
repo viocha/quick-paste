@@ -17,13 +17,13 @@ var (
 
 // Chromium 的密码框可通过 IAccessibleText 返回屏幕坐标；UIA TextPattern 的
 // 选区矩形在同一控件上可能覆盖整个输入框或落在框外。
-func ia2CaretFromElement(bounds rect) (rect, bool) {
+func ia2CaretFromElement(bounds rect, query string) (rect, bool) {
 	text := ia2TextFromElement(bounds)
 	if text == nil {
 		return rect{}, false
 	}
 	defer text.release()
-	return ia2CaretFromText(text, bounds)
+	return ia2CaretFromText(text, bounds, query)
 }
 
 func ia2TextFromElement(bounds rect) *caretCOM {
@@ -51,13 +51,13 @@ func ia2TextFromElement(bounds rect) *caretCOM {
 	return ia2TextFromAccessible(accessible)
 }
 
-func ia2CaretFromUIAElement(element *caretCOM, bounds rect) (rect, bool) {
+func ia2CaretFromUIAElement(element *caretCOM, bounds rect, query string) (rect, bool) {
 	text := ia2TextFromUIAElement(element)
 	if text == nil {
 		return rect{}, false
 	}
 	defer text.release()
-	return ia2CaretFromText(text, bounds)
+	return ia2CaretFromText(text, bounds, query)
 }
 
 func ia2TextFromUIAElement(element *caretCOM) *caretCOM {
@@ -97,7 +97,12 @@ func ia2TextFromAccessible(accessible *caretCOM) *caretCOM {
 	return text
 }
 
-func ia2CaretFromText(text *caretCOM, bounds rect) (rect, bool) {
+func ia2CaretFromText(text *caretCOM, bounds rect, query string) (rect, bool) {
+	// IA2 在 Chromium 的多行 contenteditable 中可能把插入点错误地报告为偏移 0。
+	// 有查询文本时，只有确认光标前的实际文本就是当前查询，才信任字符坐标。
+	if query != "" && !ia2TextBeforeCaretMatchesQuery(text, query) {
+		return rect{}, false
+	}
 	var offset int32 = -1
 	if !text.call(5, uintptr(unsafe.Pointer(&offset))) || offset < 0 {
 		return rect{}, false
@@ -129,9 +134,9 @@ func ia2PasswordQueryVisible(element *caretCOM, query string) bool {
 	return ia2PasswordTextHasPrefix(text, query)
 }
 
-func ia2PasswordTextHasPrefix(text *caretCOM, query string) bool {
+func ia2TextBeforeCaret(text *caretCOM, query string) (string, bool) {
 	if text == nil || query == "" {
-		return false
+		return "", false
 	}
 	var offset int32 = -1
 	var selections int32
@@ -139,15 +144,25 @@ func ia2PasswordTextHasPrefix(text *caretCOM, query string) bool {
 	// IAccessibleText 的字符偏移按 UTF-16 计数；选区不能当作插入点。
 	if !text.call(5, uintptr(unsafe.Pointer(&offset))) || offset < length ||
 		!text.call(7, uintptr(unsafe.Pointer(&selections))) || selections != 0 {
-		return false
+		return "", false
 	}
 	var value uintptr
-	// IAccessibleText::get_text 是 vtable slot 10，只读取插入点前的前缀范围。
+	// IAccessibleText::get_text 是 vtable slot 10，只读取插入点前的查询长度。
 	if !text.call(10, uintptr(offset-length), uintptr(offset), uintptr(unsafe.Pointer(&value))) || value == 0 {
-		return false
+		return "", false
 	}
 	defer sysFreeString.Call(value)
-	return passwordPrefixMatchesQuery(windows.UTF16PtrToString((*uint16)(unsafe.Pointer(value))), query)
+	return windows.UTF16PtrToString((*uint16)(unsafe.Pointer(value))), true
+}
+
+func ia2TextBeforeCaretMatchesQuery(text *caretCOM, query string) bool {
+	value, ok := ia2TextBeforeCaret(text, query)
+	return ok && value == query
+}
+
+func ia2PasswordTextHasPrefix(text *caretCOM, query string) bool {
+	value, ok := ia2TextBeforeCaret(text, query)
+	return ok && passwordPrefixMatchesQuery(value, query)
 }
 
 func passwordPrefixMatchesQuery(value, query string) bool {

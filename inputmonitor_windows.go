@@ -60,6 +60,9 @@ const (
 	vkV       = 0x56
 	vkCapital = 0x14
 
+	eventObjectValueChange = 0x800E
+	winEventSkipOwnProcess = 0x0002
+
 	quickPasteInputMarker = 0x51504852
 
 	keyeventfKeyup   = 0x0002
@@ -70,6 +73,7 @@ const (
 	hwndTopmost = ^uintptr(0)
 
 	swpNoActivate = 0x0010
+	swpNoMove     = 0x0002
 
 	gwlExStyle      = -20
 	wsExTransparent = 0x00000020
@@ -198,6 +202,8 @@ type windowsInputState struct {
 	popupX            int32
 	popupY            int32
 	popupDPI          uintptr
+	edgeRetryVersion  uint64
+	edgeRetryAttempts int
 	queryStartCaret   rect
 	queryStartValid   bool
 	showView          func(SuggestionPayload)
@@ -281,6 +287,23 @@ func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 			return
 		}
 
+		// 只监听 Edge 控件自己的文本值变化，搜狗候选窗口的
+		// 位置、显示状态完全不参与补全面板定位。
+		edgeValueCallback := syscall.NewCallback(func(_ uintptr, event uint32, hwnd uintptr, objectID, _ int32, _ uint32, _ uint32) uintptr {
+			if event != eventObjectValueChange || objectID != -4 {
+				return 0
+			}
+			foreground, _, _ := procGetForegroundWindow.Call()
+			if hwnd != 0 && hwnd == foreground && foregroundIsEdge() {
+				state.onEdgeOmniboxValueChange()
+			}
+			return 0
+		})
+		edgeValueHook, _, _ := procSetWinEventHook.Call(eventObjectValueChange, eventObjectValueChange, 0, edgeValueCallback, 0, 0, winEventSkipOwnProcess)
+		if edgeValueHook == 0 {
+			log.Print("无法监听 Edge 地址栏文本变化，使用有限次数的坐标重试")
+		}
+
 		state.mu.Lock()
 		state.hook = windows.Handle(hook)
 		state.mouseHook = windows.Handle(mouseHook)
@@ -293,6 +316,11 @@ func startPlatformInputMonitor(m *InputMonitor) (func(), error) {
 			if int32(ret) <= 0 {
 				break
 			}
+			procDispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
+		}
+
+		if edgeValueHook != 0 {
+			procUnhookWinEvent.Call(edgeValueHook)
 		}
 		procUnhookWindowsHookEx.Call(mouseHook)
 		procUnhookWindowsHookEx.Call(hook)
@@ -333,6 +361,48 @@ func (s *windowsInputState) enqueue(action func()) {
 	}
 }
 
+// Edge 的 ValuePattern 更新可能晚于键盘事件，只用于完成首次定位。
+// 面板已经定位后，本轮补全会话的屏幕锚点不可再被文本变化覆盖。
+func (s *windowsInputState) onEdgeOmniboxValueChange() {
+	s.mu.Lock()
+	awaitingInitialPosition := !s.closed &&
+		s.query != "" &&
+		len(s.suggestions) > 0 &&
+		!s.popupPositioned &&
+		len(s.pendingPopupKeyUp) == 0
+	s.mu.Unlock()
+	if awaitingInitialPosition {
+		s.updatePopup()
+	}
+}
+
+// 首次 keyup 和 Edge 的 UIA ValuePattern 更新可能存在竞态。
+// 优先使用地址栏值变化事件；事件恰好先于查询生成时，进行有限重试。
+func (s *windowsInputState) retryEdgeOmniboxAnchor(version uint64) {
+	s.mu.Lock()
+	if s.closed || s.queryVersion != version || len(s.suggestions) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	if s.edgeRetryVersion != version {
+		s.edgeRetryVersion = version
+		s.edgeRetryAttempts = 0
+	}
+	if s.edgeRetryAttempts >= 6 {
+		s.mu.Unlock()
+		return
+	}
+	s.edgeRetryAttempts++
+	s.mu.Unlock()
+	time.AfterFunc(40*time.Millisecond, func() {
+		s.mu.Lock()
+		active := !s.closed && s.queryVersion == version && len(s.suggestions) > 0 && !s.popupPositioned
+		s.mu.Unlock()
+		if active {
+			s.updatePopup()
+		}
+	})
+}
 func (s *windowsInputState) runActions() {
 	for {
 		select {
@@ -752,7 +822,6 @@ func (s *windowsInputState) backspaceWithKeyUp(vk uint32) {
 	if query == "" {
 		s.queryStartCaret = rect{}
 		s.queryStartValid = false
-		s.popupPositioned = false
 	}
 	s.mu.Unlock()
 	s.refresh(query, vk)
@@ -897,6 +966,11 @@ func nativeIMEInputMode() bool {
 }
 
 func sogouCandidateWindowState() (bool, bool) {
+	return sogouCandidateWindowMetrics()
+}
+
+// 候选窗只参与中文输入模式判断，不参与补全面板定位。
+func sogouCandidateWindowMetrics() (bool, bool) {
 	foreground, _, _ := procGetForegroundWindow.Call()
 	if foreground == 0 {
 		return false, false
@@ -906,7 +980,6 @@ func sogouCandidateWindowState() (bool, bool) {
 	if targetPID == 0 {
 		return false, false
 	}
-	// Wails/WebView2 的输入控件和候选窗属于子进程，不能只匹配宿主进程。
 	focusPID := focusedWindowProcess(foreground)
 	className, _ := windows.UTF16PtrFromString("SoPY_Comp")
 	var previous uintptr
@@ -929,7 +1002,6 @@ func sogouCandidateWindowState() (bool, bool) {
 		}
 	}
 }
-
 func focusedWindowProcess(foreground uintptr) uint32 {
 	var focusPID uint32
 	info := guiThreadInfo{CbSize: uint32(unsafe.Sizeof(guiThreadInfo{}))}
@@ -969,7 +1041,8 @@ func (s *windowsInputState) hideSuggestions() {
 	s.mu.Lock()
 	s.suggestions = nil
 	s.active = 0
-	s.popupPositioned = false
+	// 候选变为空时安排关闭；只有 hidePopup 实际关闭窗口后才释放锚点。
+	// 如果排队期间又出现匹配项且面板从未隐藏，位置必须继续固定。
 	clear(s.pendingPopupKeyUp)
 	s.mu.Unlock()
 	s.updatePopup()
@@ -986,8 +1059,9 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 	const logicalWidth = 280
 	const rowHeight = 28
 	const listPadding = 8
-	const logicalLeftOffset = 24
+	const logicalLeftOffset = 24 // 仅用于通用编辑器的 UIA 回退；Edge 地址栏和 Ctrl+F 使用文本测量定位
 	logicalHeight := listPadding + min(len(payload.Items), 6)*rowHeight
+	logicalPopupGap := 4
 
 	s.mu.Lock()
 	positioned := s.popupPositioned
@@ -1002,7 +1076,35 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 		// can perturb TSF/UIA composition state on the cold path; the warm path does
 		// not create a window here, which used to make IME positioning differ.
 		positionTarget, _, _ = procGetForegroundWindow.Call()
-		caret, caretSource, found := autocompleteCaretScreenAnchor(payload.Query)
+		var caret rect
+		var caretSource autocompleteCaretSource
+		var found bool
+		if foregroundIsEdge() {
+			findCaret, findBar, findReady := edgeFindBarQueryState(payload.Query)
+			if findBar {
+				if !findReady {
+					s.retryEdgeOmniboxAnchor(version)
+					return
+				}
+				// Ctrl+F 的 Textfield 高于实际字形行，锚点已收紧到字形行；额外留出阴影间距。
+				logicalPopupGap = 8
+				caret, caretSource, found = findCaret, autocompleteCaretAutomationQueryRange, true
+			} else {
+				edgeCaret, omnibox, ready := edgeOmniboxQueryState(payload.Query)
+				if omnibox {
+					if !ready {
+						s.retryEdgeOmniboxAnchor(version)
+						return
+					}
+					caret, caretSource, found = edgeCaret, autocompleteCaretAutomationQueryRange, true
+				} else {
+					caret, caretSource, found = autocompleteCaretScreenAnchor(payload.Query)
+				}
+			}
+		} else {
+			caret, caretSource, found = autocompleteCaretScreenAnchor(payload.Query)
+		}
+
 		if !found {
 			return
 		}
@@ -1025,13 +1127,14 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 		queryStartCaret, queryStartValid := s.queryStartCaret, s.queryStartValid
 		s.mu.Unlock()
 		applyLeftOffset := shouldApplyQueryLeftOffset(caretSource, queryStartCaret, queryStartValid, caret)
-		if !applyLeftOffset && automationFocusedQueryVisible(payload.Query) {
+		if caretSource != autocompleteCaretAutomationQueryRange && !applyLeftOffset && automationFocusedQueryVisible(payload.Query) {
 			applyLeftOffset = true
 		}
+
 		if applyLeftOffset {
 			caret.Left -= int32(scaleForDPI(logicalLeftOffset, dpi))
 		}
-		bounds := placePopup(caret, info.Work, scaleForDPI(logicalWidth, dpi), scaleForDPI(logicalHeight, dpi), scaleForDPI(4, dpi))
+		bounds := placePopup(caret, info.Work, scaleForDPI(logicalWidth, dpi), scaleForDPI(logicalHeight, dpi), scaleForDPI(logicalPopupGap, dpi))
 		x, y = bounds.Left, bounds.Top
 		positionComputed = true
 	}
@@ -1078,7 +1181,12 @@ func (s *windowsInputState) showPopup(payload SuggestionPayload) {
 	height := int32(scaleForDPI(logicalHeight, dpi))
 
 	application.InvokeSync(func() {
-		procSetWindowPos.Call(hwnd, hwndTopmost, uintptr(int64(x)), uintptr(int64(y)), uintptr(width), uintptr(height), swpNoActivate)
+		flags := uintptr(swpNoActivate)
+		if positioned {
+			// 首次定位之后只允许更新窗口尺寸；由 Win32 保证 X/Y 不变。
+			flags |= swpNoMove
+		}
+		procSetWindowPos.Call(hwnd, hwndTopmost, uintptr(int64(x)), uintptr(int64(y)), uintptr(width), uintptr(height), flags)
 		// Initialise the WebView visibility once. Subsequent displays use the native
 		// non-activating path, so a second completion cannot steal the editor's focus.
 		s.mu.Lock()

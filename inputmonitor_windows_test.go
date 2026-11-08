@@ -338,3 +338,182 @@ func TestActionQueuePreservesOrderBeyondOldCapacity(t *testing.T) {
 		t.Fatalf("actions executed = %d", next)
 	}
 }
+
+func TestPopupAnchorIgnoresIMECandidateGeometry(t *testing.T) {
+	// 英文、中文模式统一由光标所在文本行决定 Y。
+	caret := rect{Left: 432, Top: 30, Right: 433, Bottom: 70}
+	work := rect{Left: 0, Top: 0, Right: 3872, Bottom: 2352}
+	bounds := placePopup(caret, work, 700, 90, 10)
+	if bounds.Left != 432 || bounds.Top != 80 {
+		t.Fatalf("面板必须紧贴光标所在文本行下方: %+v", bounds)
+	}
+}
+
+func TestEdgeValueChangeOnlyRetriesInitialPosition(t *testing.T) {
+	s := testInputState(t)
+	s.query = "abc"
+	s.suggestions = []Suggestion{{ID: "abc", Name: "abc"}}
+	updates := 0
+	s.showView = func(SuggestionPayload) { updates++ }
+
+	// 还没有首次定位时，Edge ValuePattern 更新应继续完成定位。
+	s.onEdgeOmniboxValueChange()
+	drainActions(t, s)
+	if updates != 1 {
+		t.Fatalf("首次定位等待文本同步，应触发一次刷新，得到 %d", updates)
+	}
+
+	// 第三个键尚未释放，不应提前显示或关闭尚未显示的面板。
+	s.pendingPopupKeyUp = make(map[uint32]bool)
+	s.pendingPopupKeyUp['C'] = true
+	s.onEdgeOmniboxValueChange()
+	drainActions(t, s)
+	if updates != 1 {
+		t.Fatalf("首次触发尚未 keyup，刷新次数 = %d", updates)
+	}
+	delete(s.pendingPopupKeyUp, 'C')
+
+	// 面板已显示：异步 ValuePattern 事件只代表输入内容变化。
+	s.mu.Lock()
+	s.popupPositioned = true
+	s.popupX, s.popupY, s.popupDPI = 728, 215, 240
+	s.mu.Unlock()
+	for range 5 {
+		s.onEdgeOmniboxValueChange()
+	}
+	drainActions(t, s)
+	if !s.popupPositioned || s.popupX != 728 || s.popupY != 215 || s.popupDPI != 240 {
+		t.Fatalf("已显示面板的坐标被 Edge 文本变化覆盖: positioned=%t pos=(%d,%d) dpi=%d",
+			s.popupPositioned, s.popupX, s.popupY, s.popupDPI)
+	}
+	if updates != 1 {
+		t.Fatalf("面板持续显示时不应该执行重复的定位刷新，得到 %d", updates)
+	}
+
+	s.reset()
+	drainActions(t, s)
+	s.onEdgeOmniboxValueChange()
+	drainActions(t, s)
+	if updates != 1 || s.popupPositioned {
+		t.Fatalf("已关闭面板不得因 Edge ValuePattern 事件重新显示：updates=%d", updates)
+	}
+}
+
+func TestPopupPositionFrozenThroughQueryAndListChanges(t *testing.T) {
+	s := testInputState(t)
+	s.monitor.store.nodes = []PhraseNode{
+		{ID: "folder", Type: NodeTypeFolder, Name: "Enabled", CompletionEnabled: true},
+		{ID: "abc-1", ParentID: "folder", Type: NodeTypePhrase, Name: "abc-one"},
+		{ID: "abcd-2", ParentID: "folder", Type: NodeTypePhrase, Name: "abcd-two"},
+		{ID: "abcde-3", ParentID: "folder", Type: NodeTypePhrase, Name: "abcde-three"},
+	}
+	for _, ch := range "abc" {
+		s.append(ch)
+	}
+	drainActions(t, s)
+
+	// 模拟初次显示时已经选定屏幕锚点。
+	s.mu.Lock()
+	s.popupPositioned = true
+	s.popupX, s.popupY, s.popupDPI = 728, 215, 240
+	s.mu.Unlock()
+
+	type snapshot struct {
+		query string
+		items int
+		x, y  int32
+	}
+	var shown []snapshot
+	hidden := 0
+	s.showView = func(payload SuggestionPayload) {
+		s.mu.Lock()
+		shown = append(shown, snapshot{payload.Query, len(payload.Items), s.popupX, s.popupY})
+		s.mu.Unlock()
+	}
+	s.hideView = func() {
+		hidden++
+		s.mu.Lock()
+		s.popupPositioned = false // 与真实 hidePopup 完成关闭后的行为一致
+		s.mu.Unlock()
+	}
+
+	s.append('d') // abc -> abcd：3 项变成 2 项
+	drainActions(t, s)
+	s.append('e') // abcd -> abcde：2 项变成 1 项
+	drainActions(t, s)
+	s.backspace() // abcde -> abcd：恢复 2 项
+	drainActions(t, s)
+	s.onEdgeOmniboxValueChange() // 无障碍事件不应再次定位
+	drainActions(t, s)
+
+	want := []snapshot{
+		{query: "abcd", items: 2, x: 728, y: 215},
+		{query: "abcde", items: 1, x: 728, y: 215},
+		{query: "abcd", items: 2, x: 728, y: 215},
+	}
+	if len(shown) != len(want) {
+		t.Fatalf("更新次数 = %d, want %d; snapshots=%+v", len(shown), len(want), shown)
+	}
+	for i, expected := range want {
+		if shown[i] != expected {
+			t.Fatalf("第 %d 次更新: got=%+v want=%+v", i, shown[i], expected)
+		}
+	}
+	if hidden != 0 || !s.popupPositioned || s.popupX != 728 || s.popupY != 215 {
+		t.Fatalf("本轮补全面板不应关闭或移动: hidden=%d position=(%d,%d) locked=%t",
+			hidden, s.popupX, s.popupY, s.popupPositioned)
+	}
+
+	// 没有匹配项时才关闭会话，下一次显示必须重新定位。
+	s.append('x')
+	drainActions(t, s)
+	if hidden != 1 || s.popupPositioned {
+		t.Fatalf("无匹配项必须结束本轮定位会话: hidden=%d positioned=%t", hidden, s.popupPositioned)
+	}
+	s.backspace() // 回到 abcde，匹配再次出现。
+	drainActions(t, s)
+	if s.popupPositioned {
+		t.Fatal("关闭后的新一轮补全必须重新定位，不能使用上一轮坐标")
+	}
+}
+
+func TestPendingHideDoesNotMovePopupUnlessActuallyClosed(t *testing.T) {
+	s := testInputState(t)
+	s.monitor.store.nodes = []PhraseNode{
+		{ID: "folder", Type: NodeTypeFolder, CompletionEnabled: true},
+		{ID: "abcd", ParentID: "folder", Type: NodeTypePhrase, Name: "abcd-one"},
+	}
+	for _, ch := range "abcd" {
+		s.append(ch)
+	}
+	drainActions(t, s)
+	s.mu.Lock()
+	s.popupPositioned = true
+	s.popupX, s.popupY, s.popupDPI = 432, 148, 240
+	s.mu.Unlock()
+
+	// 阻塞 UI action 队列，模拟短时间的无匹配、随后 Backspace。
+	gate := make(chan struct{})
+	s.enqueue(func() { <-gate })
+	shows, hides := 0, 0
+	s.showView = func(SuggestionPayload) { shows++ }
+	s.hideView = func() {
+		hides++
+		s.mu.Lock()
+		s.popupPositioned = false
+		s.mu.Unlock()
+	}
+
+	s.append('x') // 查询 abcdx 暂时没有匹配，关闭操作排队但尚未执行。
+	if !s.popupPositioned {
+		t.Fatal("原生窗口还未真正隐藏，不应提前清空锚点")
+	}
+	s.backspace() // 在 UI action 执行前恢复 abcd，面板实际上从未关闭。
+	close(gate)
+	drainActions(t, s)
+	if hides != 0 || shows == 0 || !s.popupPositioned ||
+		s.popupX != 432 || s.popupY != 148 || s.popupDPI != 240 {
+		t.Fatalf("同一可见会话不能重定位: shows=%d hides=%d positioned=%t pos=(%d,%d) dpi=%d",
+			shows, hides, s.popupPositioned, s.popupX, s.popupY, s.popupDPI)
+	}
+}
