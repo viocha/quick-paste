@@ -121,7 +121,9 @@ export function BrowserApp() {
   const [clipboardIcons,setClipboardIcons]=useState<Record<string,string|undefined>>({})
   const [expanded,setExpanded]=useState<Set<string>>(loadPhraseExpanded)
   const [queries,setQueries]=useState<Record<Tab,string>>({clipboard:"",phrase:""})
-  const [captureEnabled,setCaptureEnabled]=useState(false)
+  const [captureEnabled,setCaptureEnabled]=useState<boolean|null>(null)
+  const [phrasesLoaded,setPhrasesLoaded]=useState(false)
+  const [clipboardLoadedQuery,setClipboardLoadedQuery]=useState<string|null>(null)
   const [pinned,setPinned]=useState(false)
   const [loading,setLoading]=useState(true)
   const [panelVisible,setPanelVisible]=useState(true)
@@ -158,6 +160,12 @@ export function BrowserApp() {
   const clipboardSearchVersion=useRef(0)
   const clipboardLoadingMore=useRef(false)
   const loadedOnce=useRef(false)
+  const initialLoading=useRef(false)
+  const clipboardChangePending=useRef(false)
+  const phrasesChangePending=useRef(false)
+  const skipClipboardEffect=useRef(false)
+  const tabRef=useRef(tab)
+  tabRef.current=tab
   clipboardQueryRef.current=queries.clipboard
 
   const clearListFocus=()=>{
@@ -219,6 +227,7 @@ export function BrowserApp() {
   const reloadPhrases=async()=>{
     const next=await PhraseService.ListNodes() ?? []
     setNodes(next)
+    setPhrasesLoaded(true)
     const folders=new Set(next.filter(node=>node.type==="folder").map(node=>node.id))
     setExpanded(current=>{
       const filtered=new Set([...current].filter(id=>folders.has(id)))
@@ -227,16 +236,20 @@ export function BrowserApp() {
   }
   const reloadClipboard=async(query=clipboardQueryRef.current)=>{
     const version=++clipboardSearchVersion.current
-    const page=await ClipboardService.ListPage(query,0,clipboardPageSize)
+    const [page,enabled]=await Promise.all([
+      ClipboardService.ListPage(query,0,clipboardPageSize),
+      ClipboardService.GetEnabled(),
+    ])
     const icons=page.icons??{}
+    await preloadClipboardIcons(icons)
     if(version===clipboardSearchVersion.current){
       setItems(page.items??[])
       setClipboardTotal(page.total)
       setClipboardIcons(icons)
       setClipboardWindowStart(0)
+      setCaptureEnabled(enabled)
+      setClipboardLoadedQuery(query)
     }
-    await preloadClipboardIcons(icons)
-    setCaptureEnabled(await ClipboardService.GetEnabled())
   }
   const loadMoreClipboard=async()=>{
     if(clipboardLoadingMore.current||items.length>=clipboardTotal)return 0
@@ -263,36 +276,100 @@ export function BrowserApp() {
       if(!active)return
       panelVisibleRef.current=true
       setPanelVisible(true)
-      const requestVersion=++refreshRequestVersion.current
       resetTransient()
       const requested=event?.data === "clipboard" ? "clipboard" : event?.data === "phrase" ? "phrase" : null
+      const nextTab=requested??tabRef.current
+      const resetClipboardQuery=!requested||requested==="clipboard"
+      const resetPhraseQuery=!requested||requested==="phrase"
+      const nextClipboardQuery=resetClipboardQuery?"":clipboardQueryRef.current
+      if(nextTab==="clipboard"&&(nextTab!==tabRef.current||nextClipboardQuery!==clipboardQueryRef.current)){
+        skipClipboardEffect.current=true
+      }
       if(requested)setTab(requested)
-      setQueries({clipboard:"",phrase:""});setError("")
+      if(resetClipboardQuery)clipboardQueryRef.current=nextClipboardQuery
+      setQueries(current=>({
+        ...current,
+        ...(resetClipboardQuery?{clipboard:nextClipboardQuery}:{}),
+        ...(resetPhraseQuery?{phrase:""}:{}),
+      }))
+      setError("")
+      if(!loadedOnce.current&&initialLoading.current)return
+
+      const requestVersion=++refreshRequestVersion.current
       const firstLoad=!loadedOnce.current
-      if(firstLoad)setLoading(true)
-      const tasks=requested==="clipboard"?[reloadClipboard("")]:requested==="phrase"?[reloadPhrases()]:[reloadPhrases(),reloadClipboard("")]
-      void Promise.all(tasks).catch(e=>active&&requestVersion===refreshRequestVersion.current&&setError(String(e))).finally(()=>{
+      if(firstLoad){
+        initialLoading.current=true
+        setLoading(true)
+      }
+      const load=async()=>{
+        if(firstLoad){
+          let results:PromiseSettledResult<void>[]
+          do{
+            clipboardChangePending.current=false
+            phrasesChangePending.current=false
+            results=await Promise.allSettled([reloadPhrases(),reloadClipboard("")])
+          }while(clipboardChangePending.current||phrasesChangePending.current)
+          const failure=results.find(result=>result.status==="rejected")
+          if(failure?.status==="rejected")throw failure.reason
+          return
+        }
+        const tasks=requested==="clipboard"?[reloadClipboard("")]:requested==="phrase"?[reloadPhrases()]:[reloadPhrases(),reloadClipboard("")]
+        const results=await Promise.allSettled(tasks)
+        const failure=results.find(result=>result.status==="rejected")
+        if(failure?.status==="rejected")throw failure.reason
+      }
+      let succeeded=false
+      void load().then(()=>{succeeded=true}).catch(e=>{
+        if(active&&requestVersion===refreshRequestVersion.current)setError(String(e))
+      }).finally(()=>{
         if(!active||requestVersion!==refreshRequestVersion.current)return
-        loadedOnce.current=true
+        if(firstLoad&&succeeded)loadedOnce.current=true
+        if(firstLoad)initialLoading.current=false
         setLoading(false)
-        if(requested||firstLoad)setShowRequestVersion(current=>current+1)
+        setShowRequestVersion(current=>current+1)
       })
     }
-    const changed=()=>{if(active&&panelVisibleRef.current)void reloadClipboard().catch(e=>setError(String(e)))}
+    const changed=()=>{
+      if(!active||!panelVisibleRef.current)return
+      if(!loadedOnce.current){
+        if(initialLoading.current)clipboardChangePending.current=true
+        else refresh()
+        return
+      }
+      void reloadClipboard().catch(e=>setError(String(e)))
+    }
+    const phrasesChanged=()=>{
+      if(!active||!panelVisibleRef.current)return
+      if(!loadedOnce.current){
+        if(initialLoading.current)phrasesChangePending.current=true
+        else refresh()
+        return
+      }
+      void reloadPhrases().catch(e=>setError(String(e)))
+    }
     const cancelRefresh=Events.On("browser-refresh",refresh)
     const cancelTab=Events.On("browser-tab",event=>setTab(event.data === "clipboard" ? "clipboard" : "phrase"))
     const cancelChanged=Events.On("clipboard-changed",changed)
     const cancelState=Events.On("clipboard-state-changed",changed)
-    const cancelPhrases=Events.On("phrases-changed",()=>{if(active&&panelVisibleRef.current)void reloadPhrases().catch(e=>setError(String(e)))})
+    const cancelPhrases=Events.On("phrases-changed",phrasesChanged)
     const hidden=Events.On("browser-hidden",()=>{panelVisibleRef.current=false;resetTransient();setPanelVisible(false)})
     const browserKey=Events.On("browser-key",event=>{
       const key=event.data
       if(typeof key==="string")browserRootRef.current?.dispatchEvent(new KeyboardEvent("keydown",{key:key==="Find"?"f":key==="NextTab"||key==="PreviousTab"?"Tab":key,ctrlKey:key==="Find"||key==="NextTab"||key==="PreviousTab",shiftKey:key==="PreviousTab",bubbles:true,cancelable:true}))
     })
-    void BrowserService.GetActiveTab().then(value=>{if(active)setTab(value==="clipboard"?"clipboard":"phrase")}).catch(()=>{})
+    void BrowserService.GetActiveTab().then(value=>{
+      if(!active)return
+      const next=value==="clipboard"?"clipboard":"phrase"
+      if(next==="clipboard"&&tabRef.current!==next)skipClipboardEffect.current=true
+      setTab(next)
+    }).catch(()=>{})
     void BrowserService.GetPinned().then(value=>{if(active)setPinned(value)}).catch(()=>{})
     refresh()
-    return ()=>{active=false;cancelRefresh();cancelTab();cancelChanged();cancelState();cancelPhrases();hidden();browserKey()}
+    return ()=>{
+      active=false
+      if(!loadedOnce.current)initialLoading.current=false
+      cancelRefresh();cancelTab();cancelChanged();cancelState();cancelPhrases();hidden();browserKey()
+    }
   },[])
   useEffect(()=>{
     if(tab!=="clipboard")return
@@ -300,9 +377,15 @@ export function BrowserApp() {
     setClipboardWindowStart(0)
     const viewport=scrollAreaRef.current?.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
     if(viewport)viewport.scrollTop=0
-    const version=++clipboardSearchVersion.current
-    const timer=setTimeout(()=>void ClipboardService.ListPage(queries.clipboard,0,clipboardPageSize).then(async page=>{const icons=page.icons??{};await preloadClipboardIcons(icons);if(version===clipboardSearchVersion.current){setItems(page.items??[]);setClipboardTotal(page.total);setClipboardIcons(icons)}}).catch(e=>setError(String(e))),120)
-    return ()=>clearTimeout(timer)
+    if(!loadedOnce.current){
+      skipClipboardEffect.current=false
+      return
+    }
+    if(skipClipboardEffect.current){
+      skipClipboardEffect.current=false
+      return
+    }
+    void reloadClipboard(queries.clipboard).catch(e=>setError(String(e)))
   },[queries.clipboard,tab])
   useEffect(()=>{
     try{localStorage.setItem(phraseExpandedStorageKey,JSON.stringify([...expanded]))}catch{}
@@ -318,8 +401,7 @@ export function BrowserApp() {
   },[showRequestVersion,loading,tab])
   useEffect(()=>{
     if(!showRequestVersion||loading)return
-    const timer=window.setTimeout(()=>void BrowserService.ReadyToShow(),0)
-    return ()=>window.clearTimeout(timer)
+    void BrowserService.ReadyToShow()
   },[showRequestVersion,loading])
   const run=async(action:()=>Promise<unknown>)=>{
     if(busy)return
@@ -550,20 +632,22 @@ export function BrowserApp() {
     </DialogContent>
   </Dialog>
 
+  if(loading)return null
+
   const panelContent=<>
     <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2 py-1">
       <SearchIcon className="size-3.5 text-muted-foreground"/><Input ref={searchRef} aria-label={tab==="clipboard"?"搜索剪贴板":"搜索短语"} aria-keyshortcuts="Control+f" className="h-6 border-0 px-1 text-xs shadow-none focus-visible:ring-0" placeholder={tab==="clipboard"?"搜索剪贴板":"搜索短语"} value={queries[tab]} onFocus={clearListFocus} onChange={e=>setQueries({...queries,[tab]:e.target.value})}/>
     </div>
-    {tab==="clipboard"&&!captureEnabled&&<button className="shrink-0 border-b bg-muted/50 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground" onClick={()=>void run(async()=>{await ClipboardService.SetEnabled(true);setCaptureEnabled(true)})}>剪贴板已关闭，点击开启</button>}
+    {tab==="clipboard"&&captureEnabled===false&&<button className="shrink-0 border-b bg-muted/50 px-3 py-2 text-left text-xs text-muted-foreground hover:text-foreground" onClick={()=>void run(async()=>{await ClipboardService.SetEnabled(true);setCaptureEnabled(true)})}>剪贴板已关闭，点击开启</button>}
     <ScrollArea ref={scrollAreaRef} className="min-h-0 flex-1" viewportClassName="[&>[data-slot=scroll-area-content]]:min-h-full [&>[data-slot=scroll-area-content]]:flex [&>[data-slot=scroll-area-content]]:flex-col" onScrollCapture={event=>{clearDetailTimer();void BrowserService.DismissDetail();if(tab==="clipboard"&&(event.target as HTMLElement).dataset.slot==="scroll-area-viewport"){const viewport=event.target as HTMLElement;const next=clipboardWindowStartForScroll(items,clipboardVirtual.offsets,viewport.scrollTop);setClipboardWindowStart(current=>current===next?current:next);if(viewport.scrollTop+viewport.clientHeight>=viewport.scrollHeight-800)void loadMoreClipboard()}}}>
-      {loading?<div className="min-h-full flex-1"/>:tab==="phrase"?<ContextMenu><ContextMenuTrigger className={`flex flex-1 flex-col ${dropTarget===""?"bg-accent/40 ring-2 ring-inset ring-ring":""}`} onDragOver={event=>{if(!draggedId||!canMove(nodes,draggedId,""))return;event.preventDefault();event.dataTransfer.dropEffect="move";setDropTarget("")}} onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setDropTarget(current=>current===""?null:current)}} onDrop={event=>{event.preventDefault();const id=event.dataTransfer.getData("application/x-quick-paste-node")||draggedId||"";setDraggedId(null);setDropTarget(null);if(canMove(nodes,id,""))void run(()=>movePhraseNode(id,""))}}><ul className="p-1">{phraseResults?phraseResults.map(({node,path})=><li key={node.id}>
+      {tab==="phrase"?<ContextMenu><ContextMenuTrigger className={`flex flex-1 flex-col ${dropTarget===""?"bg-accent/40 ring-2 ring-inset ring-ring":""}`} onDragOver={event=>{if(!draggedId||!canMove(nodes,draggedId,""))return;event.preventDefault();event.dataTransfer.dropEffect="move";setDropTarget("")}} onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setDropTarget(current=>current===""?null:current)}} onDrop={event=>{event.preventDefault();const id=event.dataTransfer.getData("application/x-quick-paste-node")||draggedId||"";setDraggedId(null);setDropTarget(null);if(canMove(nodes,id,""))void run(()=>movePhraseNode(id,""))}}><ul className="p-1">{phraseResults?phraseResults.map(({node,path})=><li key={node.id}>
         <ContextMenu {...contextMenuState(node.id)}>
           <ContextMenuTrigger className={contextId===node.id?"rounded bg-accent":undefined}>
             <button {...dragProps(node)} data-selectable="true" data-node-id={node.id} onFocus={()=>{phraseFocusIdRef.current=node.id;setPhraseFocusId(node.id)}} onClick={()=>void insert(node.id)} className={`flex min-h-7 w-full min-w-0 items-center gap-1 scroll-my-1 rounded px-1 py-0.5 text-left ${pointerHoverReady?"hover:bg-accent":""} outline-none focus-visible:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 ${phraseFocusId===node.id?"bg-accent":""} ${keyboardNavigation&&phraseFocusId===node.id?"ring-[3px] ring-ring/50":""}`}><FileTextIcon className="size-3.5 shrink-0 text-muted-foreground"/><span className="min-w-0"><span className="block truncate text-xs leading-3.5">{node.name}</span><span className="block truncate text-[11px] leading-3 text-muted-foreground">{path}{node.content?` · ${node.content.replace(/\s+/g," ")}`:""}</span></span></button>
           </ContextMenuTrigger>
           {phraseContext(node)}
         </ContextMenu>
-      </li>):tree()}{(phraseResults?.length===0||(!phraseResults&&nodes.length===0))&&<p className="p-5 text-center text-xs text-muted-foreground">{queries.phrase?"没有匹配的短语":"暂无短语"}</p>}</ul></ContextMenuTrigger><ContextMenuContent finalFocus={false}><ContextMenuGroup><ContextMenuItem onClick={()=>openEditor(undefined,"","phrase")}><PlusIcon/>新建短语</ContextMenuItem><ContextMenuItem onClick={()=>openEditor(undefined,"","folder")}><FolderPlusIcon/>新建文件夹</ContextMenuItem></ContextMenuGroup></ContextMenuContent></ContextMenu>:
+      </li>):tree()}{phrasesLoaded&&(phraseResults?.length===0||(!phraseResults&&nodes.length===0))&&<p className="p-5 text-center text-xs text-muted-foreground">{queries.phrase?"没有匹配的短语":"暂无短语"}</p>}</ul></ContextMenuTrigger><ContextMenuContent finalFocus={false}><ContextMenuGroup><ContextMenuItem onClick={()=>openEditor(undefined,"","phrase")}><PlusIcon/>新建短语</ContextMenuItem><ContextMenuItem onClick={()=>openEditor(undefined,"","folder")}><FolderPlusIcon/>新建文件夹</ContextMenuItem></ContextMenuGroup></ContextMenuContent></ContextMenu>:
       <div role="listbox" className="relative min-h-full" style={{height:items.length?clipboardVirtual.totalHeight:undefined}}>{clipboardVirtual.visible.map((item,virtualIndex)=>{const index=clipboardVirtual.start+virtualIndex;return <div key={item.id} className="absolute inset-x-1.5" style={{top:clipboardVirtual.offsets[index],height:clipboardRowHeight(item)}}><ContextMenu {...contextMenuState(item.id)}>
         <ContextMenuTrigger className="block h-full">
           <div className={`group relative h-full rounded-md border has-[>button:focus-visible]:bg-accent has-[>button:focus-visible]:border-ring has-[>button:focus-visible]:ring-[3px] has-[>button:focus-visible]:ring-ring/50 ${pointerHoverReady?"hover:border-border":""} ${contextId===item.id||clipboardFocusIndex===index?"border-border bg-accent":`bg-background/40 ${pointerHoverReady?"hover:bg-accent":""}`} ${keyboardNavigation&&clipboardFocusIndex===index?"border-ring ring-[3px] ring-ring/50":""}`} onPointerEnter={event=>{if(!pointerHoverReady)return;clearDetailTimer();const element=event.currentTarget;const summary=element.querySelector<HTMLElement>("[data-clipboard-summary]");const truncated=!!summary&&(summary.scrollHeight>summary.clientHeight||summary.scrollWidth>summary.clientWidth);if(item.kind!=="image"&&!truncated)return;void BrowserService.PrepareDetail().catch(()=>{});detailTimer.current=setTimeout(()=>{detailTimer.current=null;if(element.isConnected&&element.matches(":hover")){const bounds=element.getBoundingClientRect();void BrowserService.ShowDetail(item.id,Math.round(bounds.top),Math.round(bounds.height))}},tooltipDelay)}} onPointerLeave={()=>{clearDetailTimer();void BrowserService.HideDetail(item.id)}} onPointerDown={()=>{clearDetailTimer();void BrowserService.DismissDetail()}}>
@@ -579,7 +663,7 @@ export function BrowserApp() {
           </div>
         </ContextMenuTrigger>
         {clipboardContext(item)}
-      </ContextMenu></div>})}{items.length===0&&<p className="p-5 text-center text-xs text-muted-foreground">{queries.clipboard?"没有匹配项":captureEnabled?"尚无剪贴板历史":"剪贴板记录已暂停"}</p>}</div>}
+      </ContextMenu></div>})}{clipboardLoadedQuery===queries.clipboard&&items.length===0&&<p className="p-5 text-center text-xs text-muted-foreground">{queries.clipboard?"没有匹配项":captureEnabled?"尚无剪贴板历史":"剪贴板记录已暂停"}</p>}</div>}
     </ScrollArea>
     {undoVisible&&<div className="flex shrink-0 items-center justify-between border-t bg-muted px-3 py-1.5 text-xs"><span>已删除剪贴板项目</span><button className="font-medium text-primary hover:underline" onClick={()=>void run(async()=>{await ClipboardService.UndoDelete();setUndoVisible(false);await reloadClipboard()})}>撤销</button></div>}
     {error&&<p role="alert" className="shrink-0 border-t px-2 py-1.5 text-xs text-destructive">{error}</p>}
